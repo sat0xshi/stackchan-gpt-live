@@ -6,6 +6,7 @@
 
 #include <cJSON.h>
 #include <esp_audio_types.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_opus_dec.h>
 #include <esp_opus_enc.h>
@@ -20,6 +21,23 @@
 #define GPT_LIVE_SESSION_CLOSED_EVENT (1 << 1)
 
 namespace {
+
+void LogHeapState(const char* reason) {
+    ESP_LOGE(
+        TAG,
+        "%s; internal free=%u largest=%u, PSRAM free=%u largest=%u",
+        reason,
+        static_cast<unsigned>(
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                             MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(
+            heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM |
+                                             MALLOC_CAP_8BIT)));
+}
 
 esp_opus_dec_frame_duration_t OpusFrameDuration(int duration_ms) {
     switch (duration_ms) {
@@ -66,12 +84,11 @@ GptLiveProtocol::GptLiveProtocol() {
 }
 
 GptLiveProtocol::~GptLiveProtocol() {
-    StopAudioTxTask();
+    StopWorkerTask();
     {
         std::lock_guard<std::mutex> lock(websocket_mutex_);
         websocket_.reset();
     }
-    StopEventTask();
     if (output_idle_timer_ != nullptr) {
         esp_timer_stop(output_idle_timer_);
         esp_timer_delete(output_idle_timer_);
@@ -127,171 +144,139 @@ bool GptLiveProtocol::InitializeCodecs() {
 }
 
 bool GptLiveProtocol::Start() {
-    if (!InitializeCodecs() || !StartAudioTxTask()) {
-        return false;
-    }
-    if (!StartEventTask()) {
-        StopAudioTxTask();
-        return false;
-    }
-    return true;
+    return InitializeCodecs() && StartWorkerTask();
 }
 
-bool GptLiveProtocol::StartAudioTxTask() {
-    audio_tx_queue_ =
-        xQueueCreate(kAudioTxQueueLength, sizeof(AudioStreamPacket*));
-    if (audio_tx_queue_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create GPT-Live audio TX queue");
+bool GptLiveProtocol::StartWorkerTask() {
+    work_queue_ = xQueueCreate(kWorkQueueLength, sizeof(WorkItem));
+    if (work_queue_ == nullptr) {
+        LogHeapState("Failed to create GPT-Live work queue");
         return false;
     }
 
-    const BaseType_t result = xTaskCreate(
-        [](void* argument) {
-            static_cast<GptLiveProtocol*>(argument)->AudioTxTask();
-        },
-        "gpt_audio_tx", kAudioTxTaskStackSize, this, 2,
-        &audio_tx_task_handle_);
+    const auto task_entry = [](void* argument) {
+        static_cast<GptLiveProtocol*>(argument)->WorkerTask();
+    };
+    BaseType_t result = pdFAIL;
+#if CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    result = xTaskCreateWithCaps(
+        task_entry, "gpt_worker", kWorkerPsramStackSize, this, 2,
+        &worker_task_handle_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (result == pdPASS) {
+        worker_stack_in_psram_ = true;
+        ESP_LOGI(TAG, "Created GPT-Live worker with %lu-byte PSRAM stack",
+                 static_cast<unsigned long>(kWorkerPsramStackSize));
+    }
+#endif
     if (result != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create GPT-Live audio TX task");
-        vQueueDelete(audio_tx_queue_);
-        audio_tx_queue_ = nullptr;
+        LogHeapState("PSRAM GPT-Live worker creation failed; trying internal");
+        result = xTaskCreate(task_entry, "gpt_worker",
+                             kWorkerInternalStackSize, this, 2,
+                             &worker_task_handle_);
+        if (result == pdPASS) {
+            worker_stack_in_psram_ = false;
+            ESP_LOGW(TAG,
+                     "Created GPT-Live worker with %lu-byte internal stack",
+                     static_cast<unsigned long>(kWorkerInternalStackSize));
+        }
+    }
+    if (result != pdPASS) {
+        LogHeapState("Failed to create GPT-Live worker task");
+        vQueueDelete(work_queue_);
+        work_queue_ = nullptr;
         return false;
     }
     return true;
 }
 
-void GptLiveProtocol::StopAudioTxTask() {
-    if (audio_tx_task_handle_ != nullptr && audio_tx_queue_ != nullptr) {
-        AudioStreamPacket* sentinel = nullptr;
-        xQueueSend(audio_tx_queue_, &sentinel, pdMS_TO_TICKS(100));
-        for (int i = 0; i < 20 && audio_tx_task_handle_ != nullptr; ++i) {
+void GptLiveProtocol::StopWorkerTask() {
+    if (worker_task_handle_ != nullptr && work_queue_ != nullptr) {
+        QueueWork({.type = WorkType::kStop, .payload = nullptr});
+        for (int i = 0; i < 20 && worker_task_handle_ != nullptr; ++i) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
-        if (audio_tx_task_handle_ != nullptr) {
-            vTaskDelete(audio_tx_task_handle_);
-            audio_tx_task_handle_ = nullptr;
+        if (worker_task_handle_ != nullptr) {
+            if (worker_stack_in_psram_) {
+                vTaskDeleteWithCaps(worker_task_handle_);
+            } else {
+                vTaskDelete(worker_task_handle_);
+            }
+            worker_task_handle_ = nullptr;
         }
     }
-    DrainAudioTxQueue();
-    if (audio_tx_queue_ != nullptr) {
-        vQueueDelete(audio_tx_queue_);
-        audio_tx_queue_ = nullptr;
+    DrainWorkQueue();
+    if (work_queue_ != nullptr) {
+        vQueueDelete(work_queue_);
+        work_queue_ = nullptr;
     }
 }
 
-void GptLiveProtocol::AudioTxTask() {
+void GptLiveProtocol::WorkerTask() {
     while (true) {
-        AudioStreamPacket* raw_packet = nullptr;
-        if (xQueueReceive(audio_tx_queue_, &raw_packet, portMAX_DELAY) !=
-            pdTRUE) {
+        WorkItem item = {};
+        if (xQueueReceive(work_queue_, &item, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        if (raw_packet == nullptr) {
+        if (item.type == WorkType::kStop) {
             break;
         }
-
-        auto packet = std::unique_ptr<AudioStreamPacket>(raw_packet);
-        if (session_started_) {
-            ProcessAudioPacket(std::move(packet));
+        if (item.type == WorkType::kAudioTx) {
+            auto packet =
+                std::unique_ptr<AudioStreamPacket>(
+                    static_cast<AudioStreamPacket*>(item.payload));
+            if (session_started_) {
+                ProcessAudioPacket(std::move(packet));
+            }
+        } else if (item.type == WorkType::kIncomingEvent) {
+            auto event =
+                std::unique_ptr<std::string>(
+                    static_cast<std::string*>(item.payload));
+            HandleEvent(event->data(), event->size());
+            last_incoming_time_ = std::chrono::steady_clock::now();
         }
     }
-    audio_tx_task_handle_ = nullptr;
-    vTaskDelete(nullptr);
+
+    const bool psram_stack = worker_stack_in_psram_;
+    worker_task_handle_ = nullptr;
+    if (psram_stack) {
+        vTaskDeleteWithCaps(nullptr);
+    } else {
+        vTaskDelete(nullptr);
+    }
 }
 
-void GptLiveProtocol::DrainAudioTxQueue() {
-    if (audio_tx_queue_ == nullptr) {
+bool GptLiveProtocol::QueueWork(WorkItem item) {
+    return work_queue_ != nullptr &&
+           xQueueSend(work_queue_, &item, 0) == pdTRUE;
+}
+
+void GptLiveProtocol::DrainWorkQueue() {
+    if (work_queue_ == nullptr) {
         return;
     }
-    AudioStreamPacket* raw_packet = nullptr;
-    while (xQueueReceive(audio_tx_queue_, &raw_packet, 0) == pdTRUE) {
-        delete raw_packet;
-    }
-}
-
-bool GptLiveProtocol::StartEventTask() {
-    event_queue_ = xQueueCreate(kEventQueueLength, sizeof(std::string*));
-    if (event_queue_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create GPT-Live event queue");
-        return false;
-    }
-
-    const BaseType_t result = xTaskCreate(
-        [](void* argument) {
-            static_cast<GptLiveProtocol*>(argument)->EventTask();
-        },
-        "gpt_event", kEventTaskStackSize, this, 2, &event_task_handle_);
-    if (result != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create GPT-Live event task");
-        vQueueDelete(event_queue_);
-        event_queue_ = nullptr;
-        return false;
-    }
-    return true;
-}
-
-void GptLiveProtocol::StopEventTask() {
-    if (event_task_handle_ != nullptr && event_queue_ != nullptr) {
-        std::string* sentinel = nullptr;
-        xQueueSend(event_queue_, &sentinel, pdMS_TO_TICKS(100));
-        for (int i = 0; i < 20 && event_task_handle_ != nullptr; ++i) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-        if (event_task_handle_ != nullptr) {
-            vTaskDelete(event_task_handle_);
-            event_task_handle_ = nullptr;
+    WorkItem item = {};
+    while (xQueueReceive(work_queue_, &item, 0) == pdTRUE) {
+        if (item.type == WorkType::kAudioTx) {
+            delete static_cast<AudioStreamPacket*>(item.payload);
+        } else if (item.type == WorkType::kIncomingEvent) {
+            delete static_cast<std::string*>(item.payload);
         }
     }
-    DrainEventQueue();
-    if (event_queue_ != nullptr) {
-        vQueueDelete(event_queue_);
-        event_queue_ = nullptr;
-    }
-}
-
-void GptLiveProtocol::EventTask() {
-    while (true) {
-        std::string* raw_event = nullptr;
-        if (xQueueReceive(event_queue_, &raw_event, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        if (raw_event == nullptr) {
-            break;
-        }
-        auto event = std::unique_ptr<std::string>(raw_event);
-        HandleEvent(event->data(), event->size());
-        last_incoming_time_ = std::chrono::steady_clock::now();
-    }
-    event_task_handle_ = nullptr;
-    vTaskDelete(nullptr);
 }
 
 void GptLiveProtocol::QueueIncomingEvent(const char* data, size_t len) {
-    if (event_queue_ == nullptr) {
-        return;
-    }
     auto event = std::unique_ptr<std::string>(
         new (std::nothrow) std::string(data, len));
     if (event == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate GPT-Live event");
+        LogHeapState("Failed to allocate GPT-Live event");
         return;
     }
-    std::string* raw_event = event.get();
-    if (xQueueSend(event_queue_, &raw_event, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "GPT-Live event queue full; dropping event");
+    if (!QueueWork(
+            {.type = WorkType::kIncomingEvent, .payload = event.get()})) {
+        ESP_LOGW(TAG, "GPT-Live work queue full; dropping event");
         return;
     }
     event.release();
-}
-
-void GptLiveProtocol::DrainEventQueue() {
-    if (event_queue_ == nullptr) {
-        return;
-    }
-    std::string* raw_event = nullptr;
-    while (xQueueReceive(event_queue_, &raw_event, 0) == pdTRUE) {
-        delete raw_event;
-    }
 }
 
 bool GptLiveProtocol::OpenAudioChannel() {
@@ -332,7 +317,7 @@ bool GptLiveProtocol::OpenAudioChannel() {
             return;
         }
         // EspSsl invokes this callback on its 4 KiB receive task. Copy only;
-        // JSON parsing, base64 conversion, and Opus work run on gpt_event.
+        // JSON parsing, base64 conversion, and Opus work run on gpt_worker.
         QueueIncomingEvent(data, len);
     });
     websocket_->OnDisconnected([this]() {
@@ -384,7 +369,7 @@ void GptLiveProtocol::CloseAudioChannel(bool send_goodbye) {
                             pdFALSE, pdFALSE, pdMS_TO_TICKS(1500));
     }
     session_started_ = false;
-    DrainAudioTxQueue();
+    DrainWorkQueue();
     {
         std::lock_guard<std::mutex> lock(websocket_mutex_);
         websocket_.reset();
@@ -414,12 +399,13 @@ bool GptLiveProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (!session_started_ || packet == nullptr || packet->payload.empty()) {
         return false;
     }
-    if (audio_tx_queue_ == nullptr) {
+    if (work_queue_ == nullptr) {
         return false;
     }
 
     AudioStreamPacket* raw_packet = packet.get();
-    if (xQueueSend(audio_tx_queue_, &raw_packet, 0) != pdTRUE) {
+    if (!QueueWork(
+            {.type = WorkType::kAudioTx, .payload = raw_packet})) {
         // Keep the real-time producer moving rather than doing codec work or
         // blocking the main application task. A later 60 ms frame is preferable
         // to triggering the watchdog with stale queued microphone audio.
