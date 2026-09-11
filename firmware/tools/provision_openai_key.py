@@ -35,6 +35,14 @@ def main() -> int:
     idf_path = os.environ.get("IDF_PATH")
     if not idf_path:
         parser.error("IDF_PATH is not set; run this from an ESP-IDF export shell")
+    idf_python_env = os.environ.get("IDF_PYTHON_ENV_PATH")
+    idf_python = (
+        Path(idf_python_env) / "bin" / "python"
+        if idf_python_env
+        else Path(sys.executable)
+    )
+    if not idf_python.is_file():
+        parser.error("ESP-IDF Python environment was not found; re-run export.sh")
 
     key = os.environ.get(args.key, "") if args.key else getpass.getpass("OpenAI API key: ")
     if not key:
@@ -63,12 +71,12 @@ def main() -> int:
         os.chmod(csv_path, 0o600)
 
         subprocess.run(
-            [sys.executable, str(generator), "generate", str(csv_path), str(bin_path), NVS_SIZE],
+            [str(idf_python), str(generator), "generate", str(csv_path), str(bin_path), NVS_SIZE],
             check=True,
         )
         subprocess.run(
             [
-                sys.executable,
+                str(idf_python),
                 str(esptool),
                 "--chip",
                 "esp32s3",
