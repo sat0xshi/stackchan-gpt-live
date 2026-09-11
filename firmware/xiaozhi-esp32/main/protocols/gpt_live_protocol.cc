@@ -304,12 +304,15 @@ void GptLiveProtocol::HandleEvent(const char* data, size_t len) {
         const cJSON* delta =
             cJSON_GetObjectItemCaseSensitive(root, "delta");
         if (cJSON_IsString(delta) && !discard_output_) {
-            if (!output_active_) {
-                output_active_ = true;
-                output_transcript_.clear();
-                EmitTtsState("start");
+            {
+                std::lock_guard<std::mutex> lock(output_mutex_);
+                if (!output_active_) {
+                    output_active_ = true;
+                    output_transcript_.clear();
+                    EmitTtsState("start");
+                }
+                HandleOutputAudio(delta->valuestring);
             }
-            HandleOutputAudio(delta->valuestring);
             ArmOutputIdleTimer();
         }
     } else if (std::strcmp(type->valuestring,
@@ -329,6 +332,7 @@ void GptLiveProtocol::HandleEvent(const char* data, size_t len) {
         const cJSON* delta =
             cJSON_GetObjectItemCaseSensitive(root, "delta");
         if (cJSON_IsString(delta) && !discard_output_) {
+            std::lock_guard<std::mutex> lock(output_mutex_);
             if (!output_active_) {
                 output_active_ = true;
                 EmitTtsState("start");
@@ -417,6 +421,7 @@ void GptLiveProtocol::ArmOutputIdleTimer() {
 }
 
 void GptLiveProtocol::FinishOutput() {
+    std::lock_guard<std::mutex> lock(output_mutex_);
     if (!output_active_) {
         return;
     }
@@ -461,7 +466,7 @@ void GptLiveProtocol::EmitEmotion(const std::string& text) {
     const char* emotion = "neutral";
     if (text.find('?') != std::string::npos ||
         text.find("？") != std::string::npos) {
-        emotion = "thinking";
+        emotion = "doubtful";
     } else if (text.find("ごめん") != std::string::npos ||
                text.find("残念") != std::string::npos ||
                text.find("悲し") != std::string::npos) {
@@ -553,6 +558,7 @@ void GptLiveProtocol::SendStopListening() {
 
 void GptLiveProtocol::SendAbortSpeaking(AbortReason reason) {
     (void)reason;
+    std::lock_guard<std::mutex> lock(output_mutex_);
     discard_output_ = true;
     if (output_idle_timer_ != nullptr) {
         esp_timer_stop(output_idle_timer_);

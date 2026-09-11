@@ -41,7 +41,7 @@
      protocol_->OnAudioChannelOpened([this, codec, &board]() {
 --- /dev/null
 +++ b/main/protocols/gpt_live_protocol.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,79 @@
 +#ifndef GPT_LIVE_PROTOCOL_H
 +#define GPT_LIVE_PROTOCOL_H
 +
@@ -52,6 +52,7 @@
 +#include <esp_timer.h>
 +#include <web_socket.h>
 +
++#include <atomic>
 +#include <memory>
 +#include <mutex>
 +#include <string>
@@ -96,12 +97,13 @@
 +    int opus_encoder_frame_size_ = 0;
 +    int opus_encoder_outbuf_size_ = 0;
 +    std::mutex codec_mutex_;
++    std::mutex output_mutex_;
 +    std::vector<int16_t> output_pcm_;
 +    std::string input_transcript_;
 +    std::string output_transcript_;
 +    bool session_started_ = false;
 +    bool output_active_ = false;
-+    bool discard_output_ = false;
++    std::atomic_bool discard_output_{false};
 +
 +    bool SendText(const std::string& text) override;
 +    bool InitializeCodecs();
@@ -121,7 +123,7 @@
 +#endif
 --- /dev/null
 +++ b/main/protocols/gpt_live_protocol.cc
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,574 @@
 +#include "gpt_live_protocol.h"
 +
 +#include "assets/lang_config.h"
@@ -428,12 +430,15 @@
 +        const cJSON* delta =
 +            cJSON_GetObjectItemCaseSensitive(root, "delta");
 +        if (cJSON_IsString(delta) && !discard_output_) {
-+            if (!output_active_) {
-+                output_active_ = true;
-+                output_transcript_.clear();
-+                EmitTtsState("start");
++            {
++                std::lock_guard<std::mutex> lock(output_mutex_);
++                if (!output_active_) {
++                    output_active_ = true;
++                    output_transcript_.clear();
++                    EmitTtsState("start");
++                }
++                HandleOutputAudio(delta->valuestring);
 +            }
-+            HandleOutputAudio(delta->valuestring);
 +            ArmOutputIdleTimer();
 +        }
 +    } else if (std::strcmp(type->valuestring,
@@ -453,6 +458,7 @@
 +        const cJSON* delta =
 +            cJSON_GetObjectItemCaseSensitive(root, "delta");
 +        if (cJSON_IsString(delta) && !discard_output_) {
++            std::lock_guard<std::mutex> lock(output_mutex_);
 +            if (!output_active_) {
 +                output_active_ = true;
 +                EmitTtsState("start");
@@ -541,6 +547,7 @@
 +}
 +
 +void GptLiveProtocol::FinishOutput() {
++    std::lock_guard<std::mutex> lock(output_mutex_);
 +    if (!output_active_) {
 +        return;
 +    }
@@ -585,7 +592,7 @@
 +    const char* emotion = "neutral";
 +    if (text.find('?') != std::string::npos ||
 +        text.find("？") != std::string::npos) {
-+        emotion = "thinking";
++        emotion = "doubtful";
 +    } else if (text.find("ごめん") != std::string::npos ||
 +               text.find("残念") != std::string::npos ||
 +               text.find("悲し") != std::string::npos) {
@@ -677,6 +684,7 @@
 +
 +void GptLiveProtocol::SendAbortSpeaking(AbortReason reason) {
 +    (void)reason;
++    std::lock_guard<std::mutex> lock(output_mutex_);
 +    discard_output_ = true;
 +    if (output_idle_timer_ != nullptr) {
 +        esp_timer_stop(output_idle_timer_);

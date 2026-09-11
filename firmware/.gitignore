@@ -36,6 +36,7 @@
 
 # Build files
 build/
+build-host-tests/
 cmake-build-*/
 /components/
 managed_components/
@@ -49,6 +50,7 @@ managed_components/
 
 # Python virtual environment
 .venv/
+__pycache__/
 
 # Debug / Release files
 Debug/

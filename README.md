@@ -27,7 +27,7 @@ Based on [`m5stack/StackChan`](https://github.com/m5stack/StackChan) commit
   Conversion between Opus and PCM happens only inside `GptLiveProtocol`.
 - GPT-Live transcript/audio events are mapped to the existing `tts`, `stt`, and
   `llm` display events. Stack-chan speaking animation and conservative
-  neutral/happy/thinking/sad emotion mapping remain active.
+  neutral/happy/doubtful/sad emotion mapping remain active.
 - CoreS3 is half-duplex in the default no-AEC configuration: existing XiaoZhi
   state handling pauses mic processing while the speaker is active and resumes
   it when playback drains. Touch/wake interruption discards stale output.

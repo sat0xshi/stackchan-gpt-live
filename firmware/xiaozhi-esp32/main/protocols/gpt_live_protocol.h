@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 #include <web_socket.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -52,12 +53,13 @@ private:
     int opus_encoder_frame_size_ = 0;
     int opus_encoder_outbuf_size_ = 0;
     std::mutex codec_mutex_;
+    std::mutex output_mutex_;
     std::vector<int16_t> output_pcm_;
     std::string input_transcript_;
     std::string output_transcript_;
     bool session_started_ = false;
     bool output_active_ = false;
-    bool discard_output_ = false;
+    std::atomic_bool discard_output_{false};
 
     bool SendText(const std::string& text) override;
     bool InitializeCodecs();
