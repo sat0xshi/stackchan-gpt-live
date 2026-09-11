@@ -1,5 +1,6 @@
-StackChan GPT-Live CoreS3 build a9cdea7
+StackChan GPT-Live CoreS3 build 76f327b
 ESP32-S3, 16 MB flash, DIO, 80 MHz
+Stack-overflow fix: 16 KiB main stack plus dedicated 24 KiB GPT audio/event tasks.
 
 Install the flasher only (ESP-IDF is not required):
   python3 -m pip install 'esptool==4.12.0'
