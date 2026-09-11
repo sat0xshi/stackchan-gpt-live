@@ -24,7 +24,8 @@ Based on [`m5stack/StackChan`](https://github.com/m5stack/StackChan) commit
 - Session audio is mono signed PCM16 at 16 kHz, using the `marin` voice and
   Japanese-only, no-delegation instructions.
 - The unchanged XiaoZhi `AudioService` still produces/consumes 16 kHz Opus.
-  Conversion between Opus and PCM happens only inside `GptLiveProtocol`.
+  Conversion between Opus and PCM happens only inside `GptLiveProtocol`, on
+  dedicated 24 KiB transport tasks rather than the UI/main or SSL receive task.
 - GPT-Live transcript/audio events are mapped to the existing `tts`, `stt`, and
   `llm` display events. Stack-chan speaking animation and conservative
   neutral/happy/doubtful/sad emotion mapping remain active.
@@ -105,7 +106,7 @@ CoreS3版公式Stack-chanの顔アニメーション、首振り、UI、マイ�
 - モデル: `gpt-live-1`、音声: `marin`
 - 音声形式: mono PCM16 16 kHz
 - 日本語の短い応答、外部委任・ツール呼び出しなし
-- 既存AudioServiceとの境界だけでOpus↔PCM変換
+- 既存AudioServiceとの境界だけでOpus↔PCM変換（専用24 KiBタスクで実行）
 - GPT-Liveの文字起こし・音声イベントを既存の`tts`/`stt`/`llm`表示イベントへ変換
 - 標準のAECなし設定では、発話中にマイク処理を止め、再生完了後に再開
 

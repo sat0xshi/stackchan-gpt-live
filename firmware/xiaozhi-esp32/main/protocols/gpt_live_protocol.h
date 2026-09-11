@@ -5,6 +5,8 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include <esp_timer.h>
 #include <web_socket.h>
 
@@ -44,8 +46,18 @@ private:
     static constexpr int kFrameDurationMs = 60;
     static constexpr size_t kPcmSamplesPerFrame =
         kSampleRate * kFrameDurationMs / 1000;
+    static constexpr size_t kAudioTxQueueLength = 8;
+    static constexpr size_t kEventQueueLength = 12;
+    // Match XiaoZhi AudioService's Opus worker stack. Espressif's FreeRTOS
+    // stack-depth argument is measured in bytes.
+    static constexpr uint32_t kAudioTxTaskStackSize = 2048 * 12;
+    static constexpr uint32_t kEventTaskStackSize = 2048 * 12;
 
     EventGroupHandle_t event_group_handle_ = nullptr;
+    QueueHandle_t audio_tx_queue_ = nullptr;
+    TaskHandle_t audio_tx_task_handle_ = nullptr;
+    QueueHandle_t event_queue_ = nullptr;
+    TaskHandle_t event_task_handle_ = nullptr;
     esp_timer_handle_t output_idle_timer_ = nullptr;
     std::unique_ptr<WebSocket> websocket_;
     void* opus_decoder_ = nullptr;
@@ -54,15 +66,27 @@ private:
     int opus_encoder_outbuf_size_ = 0;
     std::mutex codec_mutex_;
     std::mutex output_mutex_;
+    mutable std::mutex websocket_mutex_;
     std::vector<int16_t> output_pcm_;
     std::string input_transcript_;
     std::string output_transcript_;
-    bool session_started_ = false;
+    std::atomic_bool session_started_{false};
     bool output_active_ = false;
     std::atomic_bool discard_output_{false};
+    std::atomic_uint32_t dropped_audio_frames_{0};
 
     bool SendText(const std::string& text) override;
     bool InitializeCodecs();
+    bool StartAudioTxTask();
+    void StopAudioTxTask();
+    void AudioTxTask();
+    bool ProcessAudioPacket(std::unique_ptr<AudioStreamPacket> packet);
+    void DrainAudioTxQueue();
+    bool StartEventTask();
+    void StopEventTask();
+    void EventTask();
+    void QueueIncomingEvent(const char* data, size_t len);
+    void DrainEventQueue();
     void HandleEvent(const char* data, size_t len);
     void HandleOutputAudio(const char* base64);
     void ArmOutputIdleTimer();

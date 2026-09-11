@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 #define TAG "GPTLive"
 #define GPT_LIVE_SESSION_STARTED_EVENT (1 << 0)
@@ -65,7 +66,12 @@ GptLiveProtocol::GptLiveProtocol() {
 }
 
 GptLiveProtocol::~GptLiveProtocol() {
-    websocket_.reset();
+    StopAudioTxTask();
+    {
+        std::lock_guard<std::mutex> lock(websocket_mutex_);
+        websocket_.reset();
+    }
+    StopEventTask();
     if (output_idle_timer_ != nullptr) {
         esp_timer_stop(output_idle_timer_);
         esp_timer_delete(output_idle_timer_);
@@ -121,7 +127,171 @@ bool GptLiveProtocol::InitializeCodecs() {
 }
 
 bool GptLiveProtocol::Start() {
-    return InitializeCodecs();
+    if (!InitializeCodecs() || !StartAudioTxTask()) {
+        return false;
+    }
+    if (!StartEventTask()) {
+        StopAudioTxTask();
+        return false;
+    }
+    return true;
+}
+
+bool GptLiveProtocol::StartAudioTxTask() {
+    audio_tx_queue_ =
+        xQueueCreate(kAudioTxQueueLength, sizeof(AudioStreamPacket*));
+    if (audio_tx_queue_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create GPT-Live audio TX queue");
+        return false;
+    }
+
+    const BaseType_t result = xTaskCreate(
+        [](void* argument) {
+            static_cast<GptLiveProtocol*>(argument)->AudioTxTask();
+        },
+        "gpt_audio_tx", kAudioTxTaskStackSize, this, 2,
+        &audio_tx_task_handle_);
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create GPT-Live audio TX task");
+        vQueueDelete(audio_tx_queue_);
+        audio_tx_queue_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void GptLiveProtocol::StopAudioTxTask() {
+    if (audio_tx_task_handle_ != nullptr && audio_tx_queue_ != nullptr) {
+        AudioStreamPacket* sentinel = nullptr;
+        xQueueSend(audio_tx_queue_, &sentinel, pdMS_TO_TICKS(100));
+        for (int i = 0; i < 20 && audio_tx_task_handle_ != nullptr; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (audio_tx_task_handle_ != nullptr) {
+            vTaskDelete(audio_tx_task_handle_);
+            audio_tx_task_handle_ = nullptr;
+        }
+    }
+    DrainAudioTxQueue();
+    if (audio_tx_queue_ != nullptr) {
+        vQueueDelete(audio_tx_queue_);
+        audio_tx_queue_ = nullptr;
+    }
+}
+
+void GptLiveProtocol::AudioTxTask() {
+    while (true) {
+        AudioStreamPacket* raw_packet = nullptr;
+        if (xQueueReceive(audio_tx_queue_, &raw_packet, portMAX_DELAY) !=
+            pdTRUE) {
+            continue;
+        }
+        if (raw_packet == nullptr) {
+            break;
+        }
+
+        auto packet = std::unique_ptr<AudioStreamPacket>(raw_packet);
+        if (session_started_) {
+            ProcessAudioPacket(std::move(packet));
+        }
+    }
+    audio_tx_task_handle_ = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void GptLiveProtocol::DrainAudioTxQueue() {
+    if (audio_tx_queue_ == nullptr) {
+        return;
+    }
+    AudioStreamPacket* raw_packet = nullptr;
+    while (xQueueReceive(audio_tx_queue_, &raw_packet, 0) == pdTRUE) {
+        delete raw_packet;
+    }
+}
+
+bool GptLiveProtocol::StartEventTask() {
+    event_queue_ = xQueueCreate(kEventQueueLength, sizeof(std::string*));
+    if (event_queue_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create GPT-Live event queue");
+        return false;
+    }
+
+    const BaseType_t result = xTaskCreate(
+        [](void* argument) {
+            static_cast<GptLiveProtocol*>(argument)->EventTask();
+        },
+        "gpt_event", kEventTaskStackSize, this, 2, &event_task_handle_);
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create GPT-Live event task");
+        vQueueDelete(event_queue_);
+        event_queue_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void GptLiveProtocol::StopEventTask() {
+    if (event_task_handle_ != nullptr && event_queue_ != nullptr) {
+        std::string* sentinel = nullptr;
+        xQueueSend(event_queue_, &sentinel, pdMS_TO_TICKS(100));
+        for (int i = 0; i < 20 && event_task_handle_ != nullptr; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (event_task_handle_ != nullptr) {
+            vTaskDelete(event_task_handle_);
+            event_task_handle_ = nullptr;
+        }
+    }
+    DrainEventQueue();
+    if (event_queue_ != nullptr) {
+        vQueueDelete(event_queue_);
+        event_queue_ = nullptr;
+    }
+}
+
+void GptLiveProtocol::EventTask() {
+    while (true) {
+        std::string* raw_event = nullptr;
+        if (xQueueReceive(event_queue_, &raw_event, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (raw_event == nullptr) {
+            break;
+        }
+        auto event = std::unique_ptr<std::string>(raw_event);
+        HandleEvent(event->data(), event->size());
+        last_incoming_time_ = std::chrono::steady_clock::now();
+    }
+    event_task_handle_ = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void GptLiveProtocol::QueueIncomingEvent(const char* data, size_t len) {
+    if (event_queue_ == nullptr) {
+        return;
+    }
+    auto event = std::unique_ptr<std::string>(
+        new (std::nothrow) std::string(data, len));
+    if (event == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate GPT-Live event");
+        return;
+    }
+    std::string* raw_event = event.get();
+    if (xQueueSend(event_queue_, &raw_event, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "GPT-Live event queue full; dropping event");
+        return;
+    }
+    event.release();
+}
+
+void GptLiveProtocol::DrainEventQueue() {
+    if (event_queue_ == nullptr) {
+        return;
+    }
+    std::string* raw_event = nullptr;
+    while (xQueueReceive(event_queue_, &raw_event, 0) == pdTRUE) {
+        delete raw_event;
+    }
 }
 
 bool GptLiveProtocol::OpenAudioChannel() {
@@ -161,8 +331,9 @@ bool GptLiveProtocol::OpenAudioChannel() {
             ESP_LOGW(TAG, "Ignoring unexpected binary GPT-Live frame");
             return;
         }
-        HandleEvent(data, len);
-        last_incoming_time_ = std::chrono::steady_clock::now();
+        // EspSsl invokes this callback on its 4 KiB receive task. Copy only;
+        // JSON parsing, base64 conversion, and Opus work run on gpt_event.
+        QueueIncomingEvent(data, len);
     });
     websocket_->OnDisconnected([this]() {
         session_started_ = false;
@@ -213,15 +384,21 @@ void GptLiveProtocol::CloseAudioChannel(bool send_goodbye) {
                             pdFALSE, pdFALSE, pdMS_TO_TICKS(1500));
     }
     session_started_ = false;
-    websocket_.reset();
+    DrainAudioTxQueue();
+    {
+        std::lock_guard<std::mutex> lock(websocket_mutex_);
+        websocket_.reset();
+    }
 }
 
 bool GptLiveProtocol::IsAudioChannelOpened() const {
+    std::lock_guard<std::mutex> lock(websocket_mutex_);
     return websocket_ != nullptr && websocket_->IsConnected() &&
            session_started_ && !error_occurred_ && !IsTimeout();
 }
 
 bool GptLiveProtocol::SendText(const std::string& text) {
+    std::lock_guard<std::mutex> lock(websocket_mutex_);
     if (websocket_ == nullptr || !websocket_->IsConnected()) {
         return false;
     }
@@ -237,7 +414,28 @@ bool GptLiveProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (!session_started_ || packet == nullptr || packet->payload.empty()) {
         return false;
     }
+    if (audio_tx_queue_ == nullptr) {
+        return false;
+    }
 
+    AudioStreamPacket* raw_packet = packet.get();
+    if (xQueueSend(audio_tx_queue_, &raw_packet, 0) != pdTRUE) {
+        // Keep the real-time producer moving rather than doing codec work or
+        // blocking the main application task. A later 60 ms frame is preferable
+        // to triggering the watchdog with stale queued microphone audio.
+        const uint32_t dropped = ++dropped_audio_frames_;
+        if (dropped == 1 || dropped % 16 == 0) {
+            ESP_LOGW(TAG, "GPT-Live audio TX queue full; dropped %lu frames",
+                     static_cast<unsigned long>(dropped));
+        }
+        return true;
+    }
+    packet.release();
+    return true;
+}
+
+bool GptLiveProtocol::ProcessAudioPacket(
+    std::unique_ptr<AudioStreamPacket> packet) {
     std::vector<int16_t> pcm(kPcmSamplesPerFrame);
     uint32_t decoded_size = 0;
     {
