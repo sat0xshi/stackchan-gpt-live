@@ -63,5 +63,11 @@ obj/
 
 sdkconfig
 sdkconfig.old
+sdkconfig.defaults.local
+.env
+.env.*
+!*.example
+openai.csv
+openai-nvs.bin
 
-xiaozhi-esp32/
+# XiaoZhi v2.2.4 is intentionally vendored and patched for GPT-Live.
