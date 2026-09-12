@@ -1,12 +1,16 @@
-StackChan GPT-Live CoreS3 build a17ec5a
+StackChan GPT-Live CoreS3 build 9c817df
 ESP32-S3, 16 MB flash, DIO, 80 MHz
 Memory fix: one 24 KiB PSRAM-backed GPT worker (12 KiB internal fallback).
+Boot behavior: AI.AGENT opens through Launcher and starts GPT-Live automatically.
 
 Install the flasher only (ESP-IDF is not required):
   python3 -m pip install 'esptool==4.12.0'
 
 Recommended single merged image (run from this directory):
   python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX --baud 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB 0x0 stackchan-gpt-live-cores3-merged.bin
+
+NVS-preserving app-only update:
+  python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX --baud 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB 0x20000 stack-chan.bin
 
 Equivalent individual images:
   python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX --baud 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB 0x0 bootloader.bin 0x8000 partition-table.bin 0xd000 ota_data_initial.bin 0x20000 stack-chan.bin 0xa00000 generated_assets.bin
