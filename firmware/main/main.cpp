@@ -26,36 +26,39 @@ extern "C" void app_main(void)
     ui_hal::on_delay([](uint32_t ms) { GetHAL().delay(ms); });
     ui_hal::on_get_tick([]() { return GetHAL().millis(); });
 
-    const bool skip_mooncake =
-        GetHAL().getXiaozhiConfig().startAiAgentOnBoot && GetHAL().getWarmRebootTarget() < 0;
+    // Install apps
+    auto launcher     = std::make_unique<AppLauncher>();
+    auto launcher_ptr = launcher.get();
+    GetMooncake().installApp(std::move(launcher));
+    const int ai_agent_id = GetMooncake().installApp(std::make_unique<AppAiAgent>());
+    GetMooncake().installApp(std::make_unique<AppAvatar>());
+    GetMooncake().installApp(std::make_unique<AppEspnowControl>());
+    GetMooncake().installApp(std::make_unique<AppAppCenter>());
+    GetMooncake().installApp(std::make_unique<AppEzdata>());
+    GetMooncake().installApp(std::make_unique<AppDance>());
+    GetMooncake().installApp(std::make_unique<AppSetup>());
 
-    if (!skip_mooncake) {
-        // Install apps
-        GetMooncake().installApp(std::make_unique<AppLauncher>());
-        GetMooncake().installApp(std::make_unique<AppAiAgent>());
-        GetMooncake().installApp(std::make_unique<AppAvatar>());
-        GetMooncake().installApp(std::make_unique<AppEspnowControl>());
-        GetMooncake().installApp(std::make_unique<AppAppCenter>());
-        GetMooncake().installApp(std::make_unique<AppEzdata>());
-        GetMooncake().installApp(std::make_unique<AppDance>());
-        GetMooncake().installApp(std::make_unique<AppSetup>());
-
-        // Main loop
-        while (1) {
-            GetHAL().feedTheDog();
-            GetHAL().updateHeapStatusLog();
-
-            GetMooncake().update();
-
-            if (GetHAL().isXiaozhiStartRequested()) {
-                break;
-            }
-        }
-
-        // Uninstall all apps and destroy mooncake
-        GetMooncake().uninstallAllApps();
-        DestroyMooncake();
+    // Follow the same launcher path as tapping AI.AGENT. Keep warm reboot
+    // handling intact so app-center launches can return to their target.
+    if (GetHAL().getWarmRebootTarget() < 0) {
+        launcher_ptr->openApp(ai_agent_id);
     }
+
+    // Main loop
+    while (1) {
+        GetHAL().feedTheDog();
+        GetHAL().updateHeapStatusLog();
+
+        GetMooncake().update();
+
+        if (GetHAL().isXiaozhiStartRequested()) {
+            break;
+        }
+    }
+
+    // Uninstall all apps and destroy mooncake
+    GetMooncake().uninstallAllApps();
+    DestroyMooncake();
 
     // Start xiaozhi, never returns
     GetHAL().startXiaozhi();
