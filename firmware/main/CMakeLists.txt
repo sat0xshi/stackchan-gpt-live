@@ -134,6 +134,9 @@ else()
 endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
+# The diagnostic build uses the existing pass-through processor.
+list(APPEND SOURCES "${XIAOZHI_MAIN_DIR}/audio/processors/no_audio_processor.cc")
+
 # Select audio processor according to Kconfig
 if(CONFIG_USE_AUDIO_PROCESSOR)
     list(APPEND SOURCES "${XIAOZHI_MAIN_DIR}/audio/processors/afe_audio_processor.cc")

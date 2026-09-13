@@ -220,6 +220,11 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+                static uint32_t sends = 0;
+                if (++sends <= 3 || sends % 100 == 0) {
+                    ESP_LOGI(TAG, "AudioDiag application send=%lu bytes=%u protocol=%d",
+                             (unsigned long)sends, (unsigned)packet->payload.size(), bool(protocol_));
+                }
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                     break;
                 }
@@ -494,7 +499,9 @@ void Application::InitializeProtocol() {
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         // GPT-Live transcript and audio events are independent streams. Queue
         // audio even if the scheduled UI state transition has not run yet.
-        audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        if (!audio_service_.PushPacketToDecodeQueue(std::move(packet))) {
+            ESP_LOGW(TAG, "AudioDiag playback decode queue full, dropping packet");
+        }
     });
     
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
@@ -913,7 +920,8 @@ void Application::HandleStateChangedEvent() {
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
-            audio_service_.ResetDecoder();
+            // GPT-Live audio may already be queued before this asynchronous
+            // display/state update runs. Preserve those response packets.
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -947,7 +955,10 @@ void Application::SetListeningMode(ListeningMode mode) {
 }
 
 ListeningMode Application::GetDefaultListeningMode() const {
-    return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+    // GPT-Live needs ongoing input audio, including silence, while output
+    // plays. AutoStop disables the input processor on every output delta and
+    // resets pending playback on the next listening transition.
+    return kListeningModeRealtime;
 }
 
 void Application::Reboot() {
@@ -1115,4 +1126,3 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
-

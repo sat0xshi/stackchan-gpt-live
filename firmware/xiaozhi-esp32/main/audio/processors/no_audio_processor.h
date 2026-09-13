@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <atomic>
+#include <mutex>
 
 #include "audio_processor.h"
 #include "audio_codec.h"
@@ -24,6 +25,7 @@ public:
     void EnableDeviceAec(bool enable) override;
 
 private:
+    std::mutex buffer_mutex_;
     AudioCodec* codec_ = nullptr;
     int frame_samples_ = 0;
     std::vector<int16_t> output_buffer_;

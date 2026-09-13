@@ -215,11 +215,11 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
         return;
     }
     if (enable) {
-        // Play 16bit 1 channel
+        // Drive both I2S slots with the same mono signal.
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
-            .channel = 1,
-            .channel_mask = 0,
+            .channel = 2,
+            .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
             .sample_rate = (uint32_t)output_sample_rate_,
             .mclk_multiple = 0,
         };
@@ -233,14 +233,62 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
 
 int CoreS3AudioCodec::Read(int16_t* dest, int samples) {
     if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+        const int result = esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(result);
+        if (result != ESP_OK) return 0;
+        static uint32_t reads = 0;
+        if (++reads <= 3 || reads % 100 == 0) {
+            int peak = 0;
+            int64_t sum = 0;
+            for (int i = 0; i < samples; ++i) {
+                const int magnitude = dest[i] < 0 ? -int(dest[i]) : int(dest[i]);
+                if (magnitude > peak) peak = magnitude;
+                sum += magnitude;
+            }
+            ESP_LOGI(TAG, "AudioDiag mic reads=%lu samples=%d peak=%d mean_abs=%d",
+                     (unsigned long)reads, samples, peak, samples > 0 ? int(sum / samples) : 0);
+        }
     }
     return samples;
 }
 
 int CoreS3AudioCodec::Write(const int16_t* data, int samples) {
     if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+        static uint32_t writes = 0;
+        const bool log_write = ++writes <= 3 || writes % 100 == 0;
+        if (log_write) {
+            int peak = 0;
+            for (int i = 0; i < samples; ++i) {
+                const int magnitude = data[i] < 0 ? -int(data[i]) : int(data[i]);
+                if (magnitude > peak) peak = magnitude;
+            }
+            ESP_LOGI(TAG, "AudioDiag speaker begin=%lu samples=%d peak=%d volume=%d",
+                     (unsigned long)writes, samples, peak, output_volume_);
+            if (writes == 1 || writes == 100) {
+                for (int reg : {0x01, 0x04, 0x05, 0x06, 0x0c}) {
+                    uint8_t value[2] = {};
+                    const int status = out_ctrl_if_->read_reg(out_ctrl_if_, reg, 1, value, 2);
+                    ESP_LOGI(TAG, "AudioDiag amplifier reg=0x%02x value=0x%04x result=%d",
+                             reg, (unsigned(value[0]) << 8) | value[1], status);
+                }
+            }
+        }
+        int result = ESP_OK;
+        int16_t stereo[256];
+        for (int offset = 0; offset < samples; offset += 128) {
+            const int count = samples - offset < 128 ? samples - offset : 128;
+            for (int i = 0; i < count; ++i) {
+                stereo[2 * i] = stereo[2 * i + 1] = data[offset + i];
+            }
+            result = esp_codec_dev_write(output_dev_, stereo, count * 2 * sizeof(int16_t));
+            if (result != ESP_OK) break;
+        }
+        ESP_ERROR_CHECK_WITHOUT_ABORT(result);
+        if (log_write || result != ESP_OK) {
+            ESP_LOGI(TAG, "AudioDiag speaker done=%lu result=%d", (unsigned long)writes, result);
+        }
+    } else {
+        ESP_LOGW(TAG, "AudioDiag speaker write while output disabled");
     }
     return samples;
 }

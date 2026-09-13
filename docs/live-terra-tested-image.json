@@ -1,0 +1,9 @@
+{
+  "sha256": "ba6559ff5c72230a809c2248c4d31c4003b4c179148a2e49e714fd21f5af4d49",
+  "size": 3789168,
+  "elf_sha256": "e37da95970049a7ea2757efe6039b3727dc2fed64c94685a36b7160b2cccc8aa",
+  "idf": "v5.5.4",
+  "diagnostic_revision": 6,
+  "source_base_commit": "8e27a32",
+  "note": "Identifies locally tested app; source changes are in the commit containing this file. Existing dist images are older."
+}
