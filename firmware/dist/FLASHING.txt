@@ -1,6 +1,7 @@
-StackChan GPT-Live CoreS3 build 9c817df
+StackChan GPT-Live CoreS3 build 00f29e0
 ESP32-S3, 16 MB flash, DIO, 80 MHz
-Memory fix: one 24 KiB PSRAM-backed GPT worker (12 KiB internal fallback).
+Live continuity: Realtime input remains active while responses play.
+Delegation: economical GPT-5.6 Terra reasoning with on-demand web search.
 Boot behavior: AI.AGENT opens through Launcher and starts GPT-Live automatically.
 
 Install the flasher only (ESP-IDF is not required):
