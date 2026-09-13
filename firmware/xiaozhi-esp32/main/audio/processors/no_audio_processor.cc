@@ -10,6 +10,7 @@ void NoAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srmo
 }
 
 void NoAudioProcessor::Feed(std::vector<int16_t>&& data) {
+    std::unique_lock<std::mutex> lock(buffer_mutex_);
     if (!is_running_ || !output_callback_) {
         return;
     }
@@ -23,16 +24,14 @@ void NoAudioProcessor::Feed(std::vector<int16_t>&& data) {
         output_buffer_.insert(output_buffer_.end(), data.begin(), data.end());
     }
 
-    // Output complete frames when buffer has enough data
-    while (output_buffer_.size() >= (size_t)frame_samples_) {
-        if (output_buffer_.size() == (size_t)frame_samples_) {
-            output_callback_(std::move(output_buffer_));
-            output_buffer_.clear();
-            output_buffer_.reserve(frame_samples_);
-        } else {
-            output_callback_(std::vector<int16_t>(output_buffer_.begin(), output_buffer_.begin() + frame_samples_));
-            output_buffer_.erase(output_buffer_.begin(), output_buffer_.begin() + frame_samples_);
-        }
+    // Release the buffer lock before enqueueing: the callback may wait for
+    // the application to drain audio, and the application may call Stop().
+    while (is_running_ && output_buffer_.size() >= (size_t)frame_samples_) {
+        std::vector<int16_t> frame(output_buffer_.begin(), output_buffer_.begin() + frame_samples_);
+        output_buffer_.erase(output_buffer_.begin(), output_buffer_.begin() + frame_samples_);
+        lock.unlock();
+        output_callback_(std::move(frame));
+        lock.lock();
     }
 }
 
@@ -41,6 +40,7 @@ void NoAudioProcessor::Start() {
 }
 
 void NoAudioProcessor::Stop() {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
     is_running_ = false;
     output_buffer_.clear();
 }

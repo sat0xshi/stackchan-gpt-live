@@ -224,6 +224,10 @@ void GptLiveProtocol::WorkerTask() {
             auto packet =
                 std::unique_ptr<AudioStreamPacket>(
                     static_cast<AudioStreamPacket*>(item.payload));
+            static uint32_t jobs = 0;
+            if (++jobs <= 3 || jobs % 100 == 0) {
+                ESP_LOGI(TAG, "AudioDiag worker TX jobs=%lu ready=%d", (unsigned long)jobs, bool(session_started_));
+            }
             if (session_started_) {
                 ProcessAudioPacket(std::move(packet));
             }
@@ -396,6 +400,12 @@ bool GptLiveProtocol::SendText(const std::string& text) {
 }
 
 bool GptLiveProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
+    static uint32_t attempts = 0;
+    if (++attempts <= 3 || attempts % 100 == 0) {
+        ESP_LOGI(TAG, "AudioDiag protocol TX attempt=%lu ready=%d bytes=%u queue=%d",
+                 (unsigned long)attempts, bool(session_started_),
+                 packet ? (unsigned)packet->payload.size() : 0, work_queue_ != nullptr);
+    }
     if (!session_started_ || packet == nullptr || packet->payload.empty()) {
         return false;
     }
@@ -456,6 +466,20 @@ bool GptLiveProtocol::ProcessAudioPacket(
     const bool sent = serialized != nullptr && SendText(serialized);
     cJSON_free(serialized);
     cJSON_Delete(root);
+    static uint32_t packets = 0;
+    if (++packets <= 3 || packets % 100 == 0 || !sent) {
+        int peak = 0;
+        int64_t sum = 0;
+        const size_t count = decoded_size / sizeof(int16_t);
+        for (size_t i = 0; i < count; ++i) {
+            const int magnitude = pcm[i] < 0 ? -int(pcm[i]) : int(pcm[i]);
+            if (magnitude > peak) peak = magnitude;
+            sum += magnitude;
+        }
+        ESP_LOGI(TAG, "AudioDiag mic sent=%d packets=%lu bytes=%lu peak=%d mean_abs=%d",
+                 sent, (unsigned long)packets, (unsigned long)decoded_size, peak,
+                 count ? int(sum / count) : 0);
+    }
     return sent;
 }
 
@@ -480,6 +504,7 @@ void GptLiveProtocol::HandleEvent(const char* data, size_t len) {
             session_id_ = id->valuestring;
         }
         session_started_ = true;
+        ESP_LOGI(TAG, "AudioDiag session started, configured PCM rate=%d", kSampleRate);
         last_incoming_time_ = std::chrono::steady_clock::now();
         xEventGroupSetBits(event_group_handle_,
                            GPT_LIVE_SESSION_STARTED_EVENT);
@@ -527,6 +552,26 @@ void GptLiveProtocol::HandleEvent(const char* data, size_t len) {
     } else if (std::strcmp(type->valuestring,
                            "session.output_transcript.done") == 0) {
         FinishOutput();
+    } else if (std::strcmp(type->valuestring, "session.delegation.created") == 0) {
+        const cJSON* target = cJSON_GetObjectItemCaseSensitive(root, "target");
+        ESP_LOGI(TAG, "AudioDiag delegation created target=%s backend=gpt-5.6-terra effort=low",
+                 cJSON_IsString(target) ? target->valuestring : "unknown");
+    } else if (std::strcmp(type->valuestring, "response.event") == 0) {
+        const cJSON* event = cJSON_GetObjectItemCaseSensitive(root, "event");
+        const cJSON* event_type = cJSON_GetObjectItemCaseSensitive(event, "type");
+        if (cJSON_IsString(event_type)) {
+            const char* name = event_type->valuestring;
+            if (std::strcmp(name, "response.created") == 0 ||
+                std::strcmp(name, "response.completed") == 0 ||
+                std::strcmp(name, "response.failed") == 0 ||
+                std::strcmp(name, "response.incomplete") == 0 ||
+                std::strcmp(name, "response.web_search_call.completed") == 0) {
+                const cJSON* response = cJSON_GetObjectItemCaseSensitive(event, "response");
+                const cJSON* status = cJSON_GetObjectItemCaseSensitive(response, "status");
+                ESP_LOGI(TAG, "AudioDiag backend event=%s status=%s", name,
+                         cJSON_IsString(status) ? status->valuestring : "n/a");
+            }
+        }
     } else if (std::strcmp(type->valuestring, "session.closed") == 0) {
         session_started_ = false;
         xEventGroupSetBits(event_group_handle_, GPT_LIVE_SESSION_CLOSED_EVENT);
@@ -550,6 +595,16 @@ void GptLiveProtocol::HandleOutputAudio(const char* base64) {
     const size_t old_size = output_pcm_.size();
     output_pcm_.resize(old_size + bytes.size() / sizeof(int16_t));
     std::memcpy(output_pcm_.data() + old_size, bytes.data(), bytes.size());
+    static uint32_t received_deltas = 0;
+    if (++received_deltas <= 3 || received_deltas % 100 == 0) {
+        int peak = 0;
+        for (size_t i = old_size; i < output_pcm_.size(); ++i) {
+            const int value = output_pcm_[i];
+            peak = std::max(peak, value < 0 ? -value : value);
+        }
+        ESP_LOGI(TAG, "AudioDiag received deltas=%lu bytes=%u peak=%d",
+                 (unsigned long)received_deltas, (unsigned)bytes.size(), peak);
+    }
 
     while (output_pcm_.size() >= kPcmSamplesPerFrame) {
         std::vector<uint8_t> opus(opus_encoder_outbuf_size_);
@@ -674,9 +729,40 @@ std::string GptLiveProtocol::GetSessionStartMessage() const {
     cJSON_AddStringToObject(session, "model", "gpt-live-1");
     cJSON_AddStringToObject(
         session, "instructions",
-        "あなたはスタックチャン本人です。自然で短い日本語で会話してください。"
-        "外部エージェントへの委任やツール呼び出しは行わず、"
-        "この音声セッション内だけで回答してください。");
+        "あなたはスタックチャン本人です。自然な日本語で、まず質問の結論を簡潔に答えてください。"
+        "挨拶、相づち、軽い雑談、単純な言い換えは自分で答え、委任しないでください。"
+        "比較や判断を伴う相談、複雑な計算、理由の分析、調べ物はResponsesの推論担当に委任してください。"
+        "最新情報を聞かれた場合も委任してください。場所など必要な条件が不明なら一つだけ確認してください。"
+        "委任中は必要に応じて短く待つ旨を伝え、結果が来るまで答えを作らないでください。"
+        "同じ依頼を重複して委任せず、既に得た結果を会話に活かしてください。"
+        "結果は要点を普段は1〜3文で伝え、詳しい説明を求められたら補足してください。"
+        "検索や確認に失敗した場合は正直に伝えてください。");
+    cJSON* delegation = cJSON_AddObjectToObject(session, "delegation");
+    cJSON_AddStringToObject(delegation, "type", "responses");
+    cJSON* responses = cJSON_AddObjectToObject(delegation, "responses");
+    cJSON_AddStringToObject(responses, "model", "gpt-5.6-terra");
+    cJSON_AddStringToObject(responses, "instructions",
+        "あなたはスタックチャンの推論担当です。会話の最新の質問に、正確で役に立つ日本語の答えを返してください。"
+        "音声の書き起こしには誤りや言い直しがあります。最新の訂正と文脈を優先してください。"
+        "通常の知識や推論は検索せずに答えてください。天気、ニュース、価格など最新情報が必要な場合、"
+        "またはユーザーが検索を求めた場合だけWeb検索を使ってください。"
+        "検索は必要最小限にし、同じ情報を繰り返し検索しないでください。"
+        "天気など場所が必要な質問で場所が分からなければ、場所を確認するよう伝えてください。"
+        "結論と短い根拠を返し、検索した場合は情報の日付と出典も添えてください。"
+        "分からない事実や実行していない操作を作らないでください。");
+    cJSON* reasoning = cJSON_AddObjectToObject(responses, "reasoning");
+    cJSON_AddStringToObject(reasoning, "effort", "low");
+    cJSON* text = cJSON_AddObjectToObject(responses, "text");
+    cJSON_AddStringToObject(text, "verbosity", "low");
+    // Includes reasoning tokens; this bounds one response, not total session spend.
+    cJSON_AddNumberToObject(responses, "max_output_tokens", 1536);
+    cJSON_AddStringToObject(responses, "service_tier", "default");
+    cJSON_AddStringToObject(responses, "tool_choice", "auto");
+    cJSON_AddBoolToObject(responses, "parallel_tool_calls", false);
+    cJSON* tools = cJSON_AddArrayToObject(responses, "tools");
+    cJSON* search = cJSON_CreateObject();
+    cJSON_AddStringToObject(search, "type", "web_search");
+    cJSON_AddItemToArray(tools, search);
     cJSON_AddBoolToObject(session, "store", false);
     cJSON* audio = cJSON_AddObjectToObject(session, "audio");
     cJSON* format = cJSON_AddObjectToObject(audio, "format");
@@ -754,5 +840,5 @@ void GptLiveProtocol::SendAbortSpeaking(AbortReason reason) {
 
 void GptLiveProtocol::SendMcpMessage(const std::string& message) {
     (void)message;
-    ESP_LOGD(TAG, "Ignoring MCP message: GPT-Live delegation is disabled");
+    ESP_LOGD(TAG, "Ignoring MCP message: this session uses hosted Responses tools");
 }

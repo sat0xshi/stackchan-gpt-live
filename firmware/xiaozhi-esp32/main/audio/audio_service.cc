@@ -1,4 +1,5 @@
 #include "audio_service.h"
+#include "processors/no_audio_processor.h"
 #include <esp_log.h>
 #include <cstring>
 
@@ -92,13 +93,16 @@ void AudioService::Initialize(AudioCodec* codec) {
         }
     }
 
-#if CONFIG_USE_AUDIO_PROCESSOR
-    audio_processor_ = std::make_unique<AfeAudioProcessor>();
-#else
+    // Diagnostic: isolate AFE processing from the microphone-to-network path.
     audio_processor_ = std::make_unique<NoAudioProcessor>();
-#endif
+    ESP_LOGI(TAG, "AudioDiag using microphone passthrough (AFE bypass)");
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        static uint32_t frames = 0;
+        if (++frames <= 3 || frames % 100 == 0) {
+            ESP_LOGI(TAG, "AudioDiag processor output frames=%lu samples=%u",
+                     (unsigned long)frames, (unsigned)data.size());
+        }
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
@@ -200,8 +204,17 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
             esp_ae_rate_cvt_get_max_out_sample_num(input_resampler_, in_sample_num, &output_samples);
             auto resampled = std::vector<int16_t>(output_samples * codec_->input_channels());
             uint32_t actual_output = output_samples;
-            esp_ae_rate_cvt_process(input_resampler_, (esp_ae_sample_t)data.data(), in_sample_num,
+            auto converted = esp_ae_rate_cvt_process(input_resampler_, (esp_ae_sample_t)data.data(), in_sample_num,
                                    (esp_ae_sample_t)resampled.data(), &actual_output);
+            if (converted != ESP_AE_ERR_OK) {
+                ESP_LOGE(TAG, "AudioDiag input resampler failed result=%d", converted);
+                return false;
+            }
+            static uint32_t conversions = 0;
+            if (++conversions <= 3 || conversions % 100 == 0) {
+                ESP_LOGI(TAG, "AudioDiag resampled input=%lu output=%lu channels=%d",
+                         (unsigned long)in_sample_num, (unsigned long)actual_output, codec_->input_channels());
+            }
             resampled.resize(actual_output * codec_->input_channels());
             data = std::move(resampled);
         }
@@ -415,6 +428,17 @@ void AudioService::OpusCodecTask() {
                     .encoded_bytes = 0,
                 };
                 auto ret = esp_opus_enc_process(opus_encoder_, &in, &out);
+                static uint32_t encoded_frames = 0;
+                if (++encoded_frames <= 3 || encoded_frames % 100 == 0) {
+                    int peak = 0;
+                    for (auto sample : task->pcm) {
+                        int value = sample < 0 ? -int(sample) : int(sample);
+                        if (value > peak) peak = value;
+                    }
+                    ESP_LOGI(TAG, "AudioDiag encoded frames=%lu result=%d bytes=%lu type=%d peak=%d notify=%d",
+                             (unsigned long)encoded_frames, ret, (unsigned long)out.encoded_bytes,
+                             int(task->type), peak, bool(callbacks_.on_send_queue_available));
+                }
                 if (ret == ESP_AUDIO_ERR_OK) {
                     packet->payload.assign(buf.data(), buf.data() + out.encoded_bytes);
 
@@ -595,8 +619,10 @@ void AudioService::EnableVoiceProcessing(bool enable) {
                 esp_ae_rate_cvt_reset(input_resampler_);
             }
         }
+        ESP_LOGI(TAG, "AudioDiag starting microphone processor");
         audio_processor_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+        ESP_LOGI(TAG, "AudioDiag microphone processor enabled");
     } else {
         audio_processor_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);

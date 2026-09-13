@@ -1,9 +1,9 @@
 # stackchan-gpt-live
 
 M5Stack Stack-chan for CoreS3, with the official face, head motion, UI,
-microphones, and speaker path preserved. Only the XiaoZhi agent transport is
-replaced by a direct OpenAI GPT-Live WebSocket connection. No Mac or server
-bridge is used.
+microphones, and speaker hardware. The agent uses a direct OpenAI GPT-Live
+WebSocket connection with hosted GPT-5.6 Terra reasoning and optional web search.
+No Mac or server bridge is used during conversation.
 
 Based on [`m5stack/StackChan`](https://github.com/m5stack/StackChan) commit
 `1b5765599fba8aaad1811d9a79358ccc7051f5f3`. XiaoZhi v2.2.4 is vendored under
@@ -22,19 +22,26 @@ Based on [`m5stack/StackChan`](https://github.com/m5stack/StackChan) commit
 - `GptLiveProtocol` connects to
   `wss://api.openai.com/v1/live/sessions` with `gpt-live-1`.
 - Session audio is mono signed PCM16 at 16 kHz, using the `marin` voice and
-  Japanese-only, no-delegation instructions.
-- The unchanged XiaoZhi `AudioService` still produces/consumes 16 kHz Opus.
+  Japanese conversation instructions. Complex questions can delegate to hosted
+  `gpt-5.6-terra` with `reasoning.effort=low`, a 1,536-token output limit, and
+  conditional `web_search`. Casual conversation is instructed not to delegate.
+  The limit applies per backend response, not to total session charges.
+- The XiaoZhi `AudioService` still produces/consumes 16 kHz Opus.
   Conversion between Opus and PCM happens only inside `GptLiveProtocol`, on
   one serialized 24 KiB PSRAM-backed worker rather than the UI/main or SSL
   receive task.
 - GPT-Live transcript/audio events are mapped to the existing `tts`, `stt`, and
   `llm` display events. Stack-chan speaking animation and conservative
   neutral/happy/doubtful/sad emotion mapping remain active.
-- CoreS3 is half-duplex in the default no-AEC configuration: existing XiaoZhi
-  state handling pauses mic processing while the speaker is active and resumes
-  it when playback drains. Touch/wake interruption discards stale output.
-- Avatar, motion, `cores3_audio_codec`, `stackchan_display`, `hal_mcp`, and
-  phone-avatar WebSocket code are unchanged.
+- Default conversations keep microphone processing active while output plays,
+  preserving queued playback across speaking/listening transitions.
+- The current diagnostic implementation bypasses conversation AFE processing
+  and writes the mono speaker signal to both I2S slots. Echo cancellation and
+  longer-session queue saturation remain areas to investigate.
+- Avatar, motion, display, MCP HAL, and phone-avatar WebSocket code are preserved.
+- See the [2026-09-13 development record](docs/2026-09-13-live-terra-validation.md)
+  for measured results, remaining issues, and the tested image identity. Existing
+  committed distribution images predate these changes; build this source to use them.
 
 OpenAI's current Live WebSocket contract is documented in
 [WebSockets | OpenAI API](https://developers.openai.com/api/docs/guides/voice-websockets).
@@ -100,16 +107,21 @@ app. Then launch **AI.AGENT**.
 ### 概要と変更点
 
 CoreS3版公式Stack-chanの顔アニメーション、首振り、UI、マイク・スピーカー
-経路を維持し、XiaoZhiのエージェント通信だけをOpenAI GPT-Liveの直接WSS接続
-に置き換えています。Macや中継サーバーは不要です。
+ハードウェアを使用し、OpenAI GPT-Liveへ直接WSS接続します。
+相談・調べ物はクラウドのGPT-5.6 Terraへ委任します。会話時にMacや中継サーバーは不要です。
 
 - 接続先: `wss://api.openai.com/v1/live/sessions`
 - モデル: `gpt-live-1`、音声: `marin`
 - 音声形式: mono PCM16 16 kHz
-- 日本語の短い応答、外部委任・ツール呼び出しなし
+- 日本語の応答。雑談はGPT Live、相談・調べ物はGPT-5.6 Terraへ委任
+- Terraは推論量`low`、1回の出力上限1,536トークン、通常料金枠。必要時だけWeb検索
+- 上限は推論トークンを含む1回分であり、月額やセッション全体の課金上限ではありません
 - 既存AudioServiceとの境界だけでOpus↔PCM変換（PSRAM上の専用24 KiBタスクで実行）
 - GPT-Liveの文字起こし・音声イベントを既存の`tts`/`stt`/`llm`表示イベントへ変換
-- 標準のAECなし設定では、発話中にマイク処理を止め、再生完了後に再開
+- 発話中も入力を継続し、通常の状態遷移で再生待ち音声を消さない
+- 診断のため会話用AFEを迂回し、スピーカーの左右I2Sスロットへ同じ音声を出力
+- [実機検証・残課題の記録](docs/2026-09-13-live-terra-validation.md)。既存の配布バイナリは
+  今回の変更前のものです。現在の実装を使う場合はソースからビルドしてください。
 
 APIキーはソースや設定例へ記載せず、端末のNVSだけに保存します。ただし、
 端末を物理的に取得した第三者がFlashから抽出できる可能性があります。
