@@ -67,11 +67,13 @@ local `sdkconfig`.
 
 Connect an M5Stack Unit Glass2 to the CoreS3 black Port A Grove/HY2.0 I2C
 connector. This firmware uses the dedicated external bus (SDA GPIO2, SCL GPIO1)
-at the Glass2 default address `0x3C`; the internal GPIO12/GPIO11 bus and its
-power, touch, audio, IMU, RTC, and camera devices are unchanged.
+and accepts Glass2 address `0x3C` or solder-selected `0x3D`; the internal
+GPIO12/GPIO11 bus and its power, touch, audio, IMU, RTC, and camera devices are
+unchanged.
 
 At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
 `Grok 73%`. Serial reports either `glass2: OK ...` or `glass2: not found`.
+On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
 short I2C probe. The value is not scraped from Grok and is not real usage data.
 Future HTTP/JSON integration should call the single

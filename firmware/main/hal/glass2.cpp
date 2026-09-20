@@ -10,17 +10,24 @@
 #include <driver/i2c_master.h>
 #include <esp_err.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace {
 
 constexpr char kTag[] = "GLASS2";
-constexpr std::uint8_t kAddress = 0x3c;
+constexpr std::array<std::uint8_t, 2> kAddresses = {0x3c, 0x3d};
+constexpr int kProbeAttempts = 5;
+constexpr int kProbeTimeoutMs = 30;
+constexpr int kPowerSettleMs = 250;
+constexpr int kRetryDelayMs = 100;
 constexpr int kWidth = 128;
 constexpr int kHeight = 64;
 constexpr int kBufferSize = kWidth * kHeight / 8;
 
 i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_device = nullptr;
+std::uint8_t s_address = 0;
 std::array<std::uint8_t, kBufferSize> s_framebuffer{};
 std::mutex s_mutex;
 
@@ -143,6 +150,49 @@ void release_bus()
         i2c_del_master_bus(s_bus);
         s_bus = nullptr;
     }
+    s_address = 0;
+}
+
+std::uint8_t probe_glass2_addresses()
+{
+    // ESP-IDF's i2c_master_probe() always probes at 100 kHz, independent of
+    // the eventual device transaction speed.
+    for (int attempt = 1; attempt <= kProbeAttempts; ++attempt) {
+        for (const std::uint8_t address : kAddresses) {
+            if (i2c_master_probe(s_bus, address, kProbeTimeoutMs) == ESP_OK) {
+                ESP_LOGI(kTag, "glass2: probe found 0x%02x on attempt %d/%d", address, attempt, kProbeAttempts);
+                return address;
+            }
+        }
+
+        ESP_LOGI(kTag, "glass2: probe attempt %d/%d: no response at 0x3c or 0x3d", attempt, kProbeAttempts);
+        if (attempt < kProbeAttempts) {
+            vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+        }
+    }
+    return 0;
+}
+
+std::uint8_t scan_port_a()
+{
+    ESP_LOGI(kTag, "glass2: scanning Port A I2C0 SDA=%d SCL=%d", PORT_A_I2C_SDA_PIN, PORT_A_I2C_SCL_PIN);
+
+    int found_count = 0;
+    std::uint8_t glass2_address = 0;
+    for (std::uint16_t address = 0x01; address < 0x7f; ++address) {
+        if (i2c_master_probe(s_bus, address, kProbeTimeoutMs) != ESP_OK) {
+            continue;
+        }
+
+        ++found_count;
+        ESP_LOGI(kTag, "glass2: scan found address 0x%02x", address);
+        if (address == kAddresses[0] || address == kAddresses[1]) {
+            glass2_address = static_cast<std::uint8_t>(address);
+        }
+    }
+
+    ESP_LOGI(kTag, "glass2: scan complete, %d responding address(es)", found_count);
+    return glass2_address;
 }
 
 }  // namespace
@@ -170,8 +220,17 @@ bool glass2_init()
         return false;
     }
 
-    error = i2c_master_probe(s_bus, kAddress, 50);
-    if (error != ESP_OK) {
+    // Hal::init calls us only after xiaozhi_board_init() returns. That board
+    // constructor initializes AXP2101 and AW9523 before returning; allow Port A
+    // power and the Glass2 controller additional time to settle.
+    ESP_LOGI(kTag, "glass2: CoreS3 AXP2101/AW9523 init complete; waiting %d ms for Port A power", kPowerSettleMs);
+    vTaskDelay(pdMS_TO_TICKS(kPowerSettleMs));
+
+    s_address = probe_glass2_addresses();
+    if (s_address == 0) {
+        s_address = scan_port_a();
+    }
+    if (s_address == 0) {
         ESP_LOGW(kTag, "glass2: not found");
         release_bus();
         return false;
@@ -179,8 +238,8 @@ bool glass2_init()
 
     i2c_device_config_t device_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = kAddress,
-        .scl_speed_hz = 400000,
+        .device_address = s_address,
+        .scl_speed_hz = 100000,
         .scl_wait_us = 0,
         .flags =
             {
@@ -228,7 +287,7 @@ bool glass2_init()
         return false;
     }
 
-    ESP_LOGI(kTag, "glass2: OK addr=0x%02x Port A SDA=%d SCL=%d", kAddress, PORT_A_I2C_SDA_PIN,
+    ESP_LOGI(kTag, "glass2: OK addr=0x%02x Port A SDA=%d SCL=%d", s_address, PORT_A_I2C_SDA_PIN,
              PORT_A_I2C_SCL_PIN);
     return true;
 }

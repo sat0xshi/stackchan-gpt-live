@@ -34,6 +34,8 @@ void Hal::init()
     }
     ESP_ERROR_CHECK(ret);
 
+    // Board construction initializes the internal AXP2101 and AW9523 first,
+    // including CoreS3 power rails. Glass2 then owns the separate Port A bus.
     xiaozhi_board_init();
     if (glass2_init()) {
         glass2_update_usage(73, static_cast<std::int64_t>(std::time(nullptr)));
