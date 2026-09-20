@@ -65,11 +65,11 @@ local `sdkconfig`.
 
 ### Unit Glass2 dummy usage display
 
-Connect an M5Stack Unit Glass2 to the CoreS3 black Port A Grove/HY2.0 I2C
-connector. This firmware uses the dedicated external bus (SDA GPIO2, SCL GPIO1)
-and accepts Glass2 address `0x3C` or solder-selected `0x3D`; the internal
-GPIO12/GPIO11 bus and its power, touch, audio, IMU, RTC, and camera devices are
-unchanged.
+Connect an M5Stack Unit Glass2 to the **red** Grove/HY2.0 connector on this
+Stack-chan body. That connector is electrically CoreS3 Port A (SDA GPIO2, SCL
+GPIO1); the black Grove connector is not Port A. The firmware accepts Glass2
+address `0x3C` or solder-selected `0x3D`; the internal GPIO12/GPIO11 bus and its
+power, touch, audio, IMU, RTC, and camera devices are unchanged.
 
 At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
 `Grok 73%`. Serial reports either `glass2: OK ...` or `glass2: not found`.

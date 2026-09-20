@@ -262,8 +262,8 @@ bool glass2_init()
         0xd3, 0x00, // Display offset
         0x40,       // Start line
         0x20, 0x00, // Horizontal addressing
-        0xa0,       // Segment mapping
-        0xc0,       // COM scan direction
+        0xa1,       // Reverse segment mapping for the mounted orientation
+        0xc8,       // Reverse COM scan direction (180 degrees with 0xa1)
         0xdb, 0x10, // VCOM deselect
         0xa4,       // Resume RAM display
         0x2e,       // Disable scrolling
