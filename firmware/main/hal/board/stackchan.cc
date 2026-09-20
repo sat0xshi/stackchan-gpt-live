@@ -8,6 +8,7 @@
 #include "i2c_device.h"
 #include "axp2101.h"
 #include "settings.h"
+#include "hal/glass2_usage_http.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -17,6 +18,7 @@
 #include <esp_lcd_ili9341.h>
 #include <esp_timer.h>
 #include <algorithm>
+#include <utility>
 #include "stackchan_camera.h"
 #include "hal_bridge.h"
 
@@ -600,6 +602,22 @@ public:
         InitializeCamera();
         StartTouchpadTimer();
         GetBacklight()->RestoreBrightness();
+    }
+
+    void SetNetworkEventCallback(NetworkEventCallback callback) override
+    {
+        WifiBoard::SetNetworkEventCallback(
+            [callback = std::move(callback)](NetworkEvent event, const std::string& data) {
+                if (event == NetworkEvent::Connected) {
+                    glass2_usage_http_start();
+                } else if (event == NetworkEvent::Disconnected) {
+                    glass2_usage_http_stop();
+                }
+
+                if (callback) {
+                    callback(event, data);
+                }
+            });
     }
 
     virtual AudioCodec* GetAudioCodec() override

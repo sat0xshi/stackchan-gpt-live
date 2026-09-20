@@ -63,7 +63,7 @@ The committed defaults select `CONFIG_BOARD_TYPE_M5STACK_STACK_CHAN=y`, 16 MB
 flash, PSRAM, and the CoreS3 ESP32-S3 target. `set-target` creates an ignored
 local `sdkconfig`.
 
-### Unit Glass2 dummy usage display
+### Unit Glass2 usage display
 
 Connect an M5Stack Unit Glass2 to the **red** Grove/HY2.0 connector on this
 Stack-chan body. That connector is electrically CoreS3 Port A (SDA GPIO2, SCL
@@ -76,9 +76,25 @@ At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
 On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
 short I2C probe. The value is not scraped from Grok and is not real usage data.
-Future HTTP/JSON integration should call the single
-`glass2_update_usage(percent, updated_at_unix_seconds)` function with an integer
-from 0 through 100 and the source update timestamp.
+All accepted updates pass through the single
+`glass2_update_usage(percent, updated_at_unix_seconds)` function.
+
+After the Wi-Fi station connects, nanami can replace the boot dummy over the
+LAN-only, unauthenticated endpoint at
+`http://<stackchan-ip>:8767/usage`:
+
+```bash
+curl -i -X POST "http://<stackchan-ip>:8767/usage" \
+  -H "Content-Type: application/json" \
+  -d '{"percent":61,"updatedAt":1758336000}'
+```
+
+The body requires an integer `percent` from 0 through 100 and a Unix-seconds
+integer `updatedAt` (`updated_at` is also accepted). Success returns
+`200 {"ok":true}`; malformed input returns 400, and a missing/unavailable
+Glass2 returns 503. Serial logs the accepted percentage and timestamp. Port 8767
+binds only after station connectivity; there is no authentication in this MVP,
+so expose it only to a trusted LAN.
 
 Physical idle servo motion is disabled: while AI.AGENT is waiting, Stack-chan
 does not install the randomized head-motion modifier. Intentional face, blink,
