@@ -75,13 +75,15 @@ At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
 `Grok 73%`. Serial reports either `glass2: OK ...` or `glass2: not found`.
 On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
-short I2C probe. The value is not scraped from Grok and is not real usage data.
-All accepted updates pass through the single
-`glass2_update_usage(percent, updated_at_unix_seconds)` function.
+short I2C probe. The boot value is not scraped from Grok and is not real usage
+data. The display retains up to three service slots and renders compact `G`,
+`C`, and `X` labels for Grok, Claude, and Codex; other IDs use their first
+letter when a slot is available.
 
 After the Wi-Fi station connects, nanami can replace the boot dummy over the
 LAN-only, unauthenticated endpoint at
-`http://<stackchan-ip>:8767/usage`:
+`http://<stackchan-ip>:8767/usage`. The backward-compatible payload updates
+Grok only:
 
 ```bash
 curl -i -X POST "http://<stackchan-ip>:8767/usage" \
@@ -89,12 +91,21 @@ curl -i -X POST "http://<stackchan-ip>:8767/usage" \
   -d '{"percent":61,"updatedAt":1758336000}'
 ```
 
-The body requires an integer `percent` from 0 through 100 and a Unix-seconds
-integer `updatedAt` (`updated_at` is also accepted). Success returns
-`200 {"ok":true}`; malformed input returns 400, and a missing/unavailable
-Glass2 returns 503. Serial logs the accepted percentage and timestamp. Port 8767
-binds only after station connectivity; there is no authentication in this MVP,
-so expose it only to a trusted LAN.
+The multi-service payload updates one to three supplied IDs atomically; omitted
+IDs retain their previous values:
+
+```bash
+curl -i -X POST "http://<stackchan-ip>:8767/usage" \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"id":"grok","percent":7},{"id":"claude","percent":12},{"id":"codex","percent":3}],"updatedAt":1758335000}'
+```
+
+Percentages must be integers from 0 through 100. `updatedAt` is a Unix-seconds
+integer; `updated_at` is also accepted. Success returns `200 {"ok":true}`;
+malformed or out-of-range input returns 400, and a missing/unavailable Glass2
+returns 503. Serial logs each accepted service and timestamp. Port 8767 binds
+only after station connectivity; there is no authentication in this MVP, so
+expose it only to a trusted LAN.
 
 Autonomous physical servo motion is disabled. At avatar startup and each
 transition into standby, Stack-chan commands yaw and pitch to their calibrated

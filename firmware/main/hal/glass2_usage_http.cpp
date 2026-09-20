@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 
 #include <ArduinoJson.h>
@@ -15,7 +16,8 @@ namespace {
 
 constexpr char kTag[] = "GLASS2_HTTP";
 constexpr std::uint16_t kPort = 8767;
-constexpr std::size_t kMaxBodySize = 256;
+constexpr std::size_t kMaxBodySize = 512;
+constexpr std::size_t kMaxServiceIdLength = 15;
 
 httpd_handle_t s_server = nullptr;
 std::mutex s_server_mutex;
@@ -52,31 +54,89 @@ esp_err_t usage_handler(httpd_req_t* request)
         return send_json(request, "400 Bad Request", R"({"ok":false})");
     }
 
-    const ArduinoJson::JsonVariantConst percent_value = document["percent"];
     ArduinoJson::JsonVariantConst updated_at_value = document["updatedAt"];
     if (updated_at_value.isNull()) {
         updated_at_value = document["updated_at"];
     }
 
-    if (!percent_value.is<int>() || !updated_at_value.is<std::int64_t>()) {
-        ESP_LOGW(kTag, "usage http: percent and updatedAt must be integers");
+    if (!updated_at_value.is<std::int64_t>()) {
+        ESP_LOGW(kTag, "usage http: updatedAt must be an integer");
         return send_json(request, "400 Bad Request", R"({"ok":false})");
     }
-
-    const int percent = percent_value.as<int>();
     const std::int64_t updated_at = updated_at_value.as<std::int64_t>();
-    if (percent < 0 || percent > 100) {
-        ESP_LOGW(kTag, "usage http: rejected percent %d", percent);
-        return send_json(request, "400 Bad Request", R"({"ok":false})");
+
+    bool updated = false;
+    const ArduinoJson::JsonVariantConst items_value = document["items"];
+    if (!items_value.isNull()) {
+        if (!items_value.is<ArduinoJson::JsonArrayConst>()) {
+            ESP_LOGW(kTag, "usage http: items must be an array");
+            return send_json(request, "400 Bad Request", R"({"ok":false})");
+        }
+
+        const ArduinoJson::JsonArrayConst array = items_value.as<ArduinoJson::JsonArrayConst>();
+        if (array.size() == 0 || array.size() > GLASS2_USAGE_SLOT_COUNT) {
+            ESP_LOGW(kTag, "usage http: items must contain 1-%u entries",
+                     static_cast<unsigned>(GLASS2_USAGE_SLOT_COUNT));
+            return send_json(request, "400 Bad Request", R"({"ok":false})");
+        }
+
+        std::array<Glass2UsageItem, GLASS2_USAGE_SLOT_COUNT> usage_items{};
+        std::size_t index = 0;
+        for (const ArduinoJson::JsonVariantConst value : array) {
+            if (!value.is<ArduinoJson::JsonObjectConst>()) {
+                ESP_LOGW(kTag, "usage http: each item must be an object");
+                return send_json(request, "400 Bad Request", R"({"ok":false})");
+            }
+
+            const ArduinoJson::JsonVariantConst id_value = value["id"];
+            const ArduinoJson::JsonVariantConst percent_value = value["percent"];
+            if (!id_value.is<const char*>() || !percent_value.is<int>()) {
+                ESP_LOGW(kTag, "usage http: item id must be a string and percent must be an integer");
+                return send_json(request, "400 Bad Request", R"({"ok":false})");
+            }
+
+            const char* id = id_value.as<const char*>();
+            const int percent = percent_value.as<int>();
+            const std::size_t id_length = id == nullptr ? 0 : std::strlen(id);
+            if (id_length == 0 || id_length > kMaxServiceIdLength || percent < 0 || percent > 100) {
+                ESP_LOGW(kTag, "usage http: invalid item at index %u", static_cast<unsigned>(index));
+                return send_json(request, "400 Bad Request", R"({"ok":false})");
+            }
+
+            usage_items[index++] = {
+                .id = id,
+                .percent = percent,
+            };
+        }
+        updated = glass2_update_usage_items(usage_items.data(), index, updated_at);
+        if (updated) {
+            ESP_LOGI(kTag, "usage http: updated %u service(s) updatedAt=%lld", static_cast<unsigned>(index),
+                     static_cast<long long>(updated_at));
+        }
+    } else {
+        const ArduinoJson::JsonVariantConst percent_value = document["percent"];
+        if (!percent_value.is<int>()) {
+            ESP_LOGW(kTag, "usage http: percent must be an integer");
+            return send_json(request, "400 Bad Request", R"({"ok":false})");
+        }
+
+        const int percent = percent_value.as<int>();
+        if (percent < 0 || percent > 100) {
+            ESP_LOGW(kTag, "usage http: rejected percent %d", percent);
+            return send_json(request, "400 Bad Request", R"({"ok":false})");
+        }
+        updated = glass2_update_usage(percent, updated_at);
+        if (updated) {
+            ESP_LOGI(kTag, "usage http: updated grok=%d updatedAt=%lld", percent,
+                     static_cast<long long>(updated_at));
+        }
     }
 
-    if (!glass2_update_usage(percent, updated_at)) {
+    if (!updated) {
         ESP_LOGW(kTag, "usage http: Glass2 unavailable");
         return send_json(request, "503 Service Unavailable", R"({"ok":false})");
     }
 
-    ESP_LOGI(kTag, "usage http: updated percent=%d updatedAt=%lld", percent,
-             static_cast<long long>(updated_at));
     return send_json(request, "200 OK", R"({"ok":true})");
 }
 

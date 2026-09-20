@@ -3,6 +3,7 @@
 #include "board/config.h"
 
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -24,6 +25,7 @@ constexpr int kRetryDelayMs = 100;
 constexpr int kWidth = 128;
 constexpr int kHeight = 64;
 constexpr int kBufferSize = kWidth * kHeight / 8;
+constexpr std::size_t kMaxServiceIdLength = 15;
 
 i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_device = nullptr;
@@ -31,12 +33,14 @@ std::uint8_t s_address = 0;
 std::array<std::uint8_t, kBufferSize> s_framebuffer{};
 std::mutex s_mutex;
 
-struct Usage {
+struct UsageSlot {
+    std::array<char, kMaxServiceIdLength + 1> id{};
     int percent = 0;
-    std::int64_t updated_at_unix_seconds = 0;
+    bool occupied = false;
 };
 
-Usage s_usage;
+std::array<UsageSlot, GLASS2_USAGE_SLOT_COUNT> s_usage_slots{};
+std::int64_t s_updated_at_unix_seconds = 0;
 
 esp_err_t write_commands(const std::uint8_t* commands, std::size_t length)
 {
@@ -82,26 +86,35 @@ const std::array<std::uint8_t, 5>& glyph(char character)
         {{0x36, 0x49, 0x49, 0x49, 0x36}},
         {{0x06, 0x49, 0x49, 0x29, 0x1e}},
     };
-    static constexpr std::array<std::uint8_t, 5> capital_g = {0x3e, 0x41, 0x49, 0x49, 0x7a};
-    static constexpr std::array<std::uint8_t, 5> lower_r = {0x7c, 0x08, 0x04, 0x04, 0x08};
-    static constexpr std::array<std::uint8_t, 5> lower_o = {0x38, 0x44, 0x44, 0x44, 0x38};
-    static constexpr std::array<std::uint8_t, 5> lower_k = {0x7f, 0x10, 0x28, 0x44, 0x00};
+    static constexpr std::array<std::uint8_t, 5> uppercase[] = {
+        {{0x7e, 0x11, 0x11, 0x11, 0x7e}}, {{0x7f, 0x49, 0x49, 0x49, 0x36}},
+        {{0x3e, 0x41, 0x41, 0x41, 0x22}}, {{0x7f, 0x41, 0x41, 0x22, 0x1c}},
+        {{0x7f, 0x49, 0x49, 0x49, 0x41}}, {{0x7f, 0x09, 0x09, 0x09, 0x01}},
+        {{0x3e, 0x41, 0x49, 0x49, 0x7a}}, {{0x7f, 0x08, 0x08, 0x08, 0x7f}},
+        {{0x00, 0x41, 0x7f, 0x41, 0x00}}, {{0x20, 0x40, 0x41, 0x3f, 0x01}},
+        {{0x7f, 0x08, 0x14, 0x22, 0x41}}, {{0x7f, 0x40, 0x40, 0x40, 0x40}},
+        {{0x7f, 0x02, 0x0c, 0x02, 0x7f}}, {{0x7f, 0x04, 0x08, 0x10, 0x7f}},
+        {{0x3e, 0x41, 0x41, 0x41, 0x3e}}, {{0x7f, 0x09, 0x09, 0x09, 0x06}},
+        {{0x3e, 0x41, 0x51, 0x21, 0x5e}}, {{0x7f, 0x09, 0x19, 0x29, 0x46}},
+        {{0x46, 0x49, 0x49, 0x49, 0x31}}, {{0x01, 0x01, 0x7f, 0x01, 0x01}},
+        {{0x3f, 0x40, 0x40, 0x40, 0x3f}}, {{0x1f, 0x20, 0x40, 0x20, 0x1f}},
+        {{0x3f, 0x40, 0x38, 0x40, 0x3f}}, {{0x63, 0x14, 0x08, 0x14, 0x63}},
+        {{0x07, 0x08, 0x70, 0x08, 0x07}}, {{0x61, 0x51, 0x49, 0x45, 0x43}},
+    };
     static constexpr std::array<std::uint8_t, 5> percent = {0x63, 0x13, 0x08, 0x64, 0x63};
+    static constexpr std::array<std::uint8_t, 5> question = {0x02, 0x01, 0x51, 0x09, 0x06};
 
     if (character >= '0' && character <= '9') {
         return digits[character - '0'];
     }
+    if (character >= 'A' && character <= 'Z') {
+        return uppercase[character - 'A'];
+    }
     switch (character) {
-        case 'G':
-            return capital_g;
-        case 'r':
-            return lower_r;
-        case 'o':
-            return lower_o;
-        case 'k':
-            return lower_k;
         case '%':
             return percent;
+        case '?':
+            return question;
         default:
             return blank;
     }
@@ -115,13 +128,12 @@ void set_pixel(int x, int y)
     s_framebuffer[x + (y / 8) * kWidth] |= static_cast<std::uint8_t>(1U << (y & 7));
 }
 
-void draw_text(const char* text)
+void draw_text(const char* text, int cursor_y)
 {
     constexpr int scale = 2;
     constexpr int character_width = 6 * scale;
     const int text_width = static_cast<int>(std::strlen(text)) * character_width - scale;
     int cursor_x = (kWidth - text_width) / 2;
-    constexpr int cursor_y = (kHeight - 7 * scale) / 2;
 
     for (; *text != '\0'; ++text, cursor_x += character_width) {
         const auto& columns = glyph(*text);
@@ -138,6 +150,72 @@ void draw_text(const char* text)
             }
         }
     }
+}
+
+char service_label(const char* id)
+{
+    if (std::strcmp(id, "grok") == 0) {
+        return 'G';
+    }
+    if (std::strcmp(id, "claude") == 0) {
+        return 'C';
+    }
+    if (std::strcmp(id, "codex") == 0) {
+        return 'X';
+    }
+
+    const unsigned char first = static_cast<unsigned char>(id[0]);
+    const char label = static_cast<char>(std::toupper(first));
+    return label >= 'A' && label <= 'Z' ? label : '?';
+}
+
+esp_err_t redraw_usage()
+{
+    constexpr int kLineHeight = 14;
+    constexpr int kLineStep = 21;
+
+    int occupied_count = 0;
+    for (const auto& slot : s_usage_slots) {
+        occupied_count += slot.occupied ? 1 : 0;
+    }
+
+    s_framebuffer.fill(0);
+    if (occupied_count == 0) {
+        return flush_framebuffer();
+    }
+
+    const int content_height = kLineHeight + (occupied_count - 1) * kLineStep;
+    int cursor_y = (kHeight - content_height) / 2;
+    for (const auto& slot : s_usage_slots) {
+        if (!slot.occupied) {
+            continue;
+        }
+
+        char line[12];
+        std::snprintf(line, sizeof(line), "%c %d%%", service_label(slot.id.data()), slot.percent);
+        draw_text(line, cursor_y);
+        cursor_y += kLineStep;
+    }
+    return flush_framebuffer();
+}
+
+bool normalize_service_id(const char* id, std::array<char, kMaxServiceIdLength + 1>& normalized)
+{
+    if (id == nullptr) {
+        return false;
+    }
+
+    const std::size_t length = std::strlen(id);
+    if (length == 0 || length > kMaxServiceIdLength) {
+        return false;
+    }
+
+    normalized.fill('\0');
+    for (std::size_t i = 0; i < length; ++i) {
+        const unsigned char character = static_cast<unsigned char>(id[i]);
+        normalized[i] = static_cast<char>(std::tolower(character));
+    }
+    return true;
 }
 
 void release_bus()
@@ -294,9 +372,28 @@ bool glass2_init()
 
 bool glass2_update_usage(int percent, std::int64_t updated_at_unix_seconds)
 {
-    if (percent < 0 || percent > 100) {
-        ESP_LOGW(kTag, "glass2: rejected usage percent %d", percent);
+    const Glass2UsageItem item = {
+        .id = "grok",
+        .percent = percent,
+    };
+    return glass2_update_usage_items(&item, 1, updated_at_unix_seconds);
+}
+
+bool glass2_update_usage_items(const Glass2UsageItem* items, std::size_t count,
+                               std::int64_t updated_at_unix_seconds)
+{
+    if (items == nullptr || count == 0 || count > GLASS2_USAGE_SLOT_COUNT) {
+        ESP_LOGW(kTag, "glass2: rejected usage item count %u", static_cast<unsigned>(count));
         return false;
+    }
+
+    std::array<std::array<char, kMaxServiceIdLength + 1>, GLASS2_USAGE_SLOT_COUNT> normalized_ids{};
+    for (std::size_t i = 0; i < count; ++i) {
+        if (items[i].percent < 0 || items[i].percent > 100 ||
+            !normalize_service_id(items[i].id, normalized_ids[i])) {
+            ESP_LOGW(kTag, "glass2: rejected usage item %u", static_cast<unsigned>(i));
+            return false;
+        }
     }
 
     std::lock_guard<std::mutex> lock(s_mutex);
@@ -304,23 +401,42 @@ bool glass2_update_usage(int percent, std::int64_t updated_at_unix_seconds)
         return false;
     }
 
-    s_usage = {
-        .percent = percent,
-        .updated_at_unix_seconds = updated_at_unix_seconds,
-    };
+    for (std::size_t i = 0; i < count; ++i) {
+        UsageSlot* target = nullptr;
+        for (auto& slot : s_usage_slots) {
+            if (slot.occupied && std::strcmp(slot.id.data(), normalized_ids[i].data()) == 0) {
+                target = &slot;
+                break;
+            }
+        }
+        if (target == nullptr) {
+            for (auto& slot : s_usage_slots) {
+                if (!slot.occupied) {
+                    target = &slot;
+                    target->id = normalized_ids[i];
+                    target->occupied = true;
+                    break;
+                }
+            }
+        }
+        if (target == nullptr) {
+            ESP_LOGW(kTag, "glass2: no free slot for service '%s'", normalized_ids[i].data());
+            continue;
+        }
 
-    char line[16];
-    std::snprintf(line, sizeof(line), "Grok %d%%", s_usage.percent);
-    s_framebuffer.fill(0);
-    draw_text(line);
+        target->percent = items[i].percent;
+        ESP_LOGI(kTag, "glass2: service=%s usage=%d updated_at=%lld", target->id.data(), target->percent,
+                 static_cast<long long>(updated_at_unix_seconds));
+    }
+    s_updated_at_unix_seconds = updated_at_unix_seconds;
 
-    const esp_err_t error = flush_framebuffer();
+    const esp_err_t error = redraw_usage();
     if (error != ESP_OK) {
         ESP_LOGW(kTag, "glass2: update failed: %s", esp_err_to_name(error));
         return false;
     }
 
-    ESP_LOGI(kTag, "glass2: usage=%d updated_at=%lld", s_usage.percent,
-             static_cast<long long>(s_usage.updated_at_unix_seconds));
+    ESP_LOGI(kTag, "glass2: usage display refreshed updated_at=%lld",
+             static_cast<long long>(s_updated_at_unix_seconds));
     return true;
 }
