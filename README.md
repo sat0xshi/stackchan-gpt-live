@@ -80,6 +80,10 @@ Future HTTP/JSON integration should call the single
 `glass2_update_usage(percent, updated_at_unix_seconds)` function with an integer
 from 0 through 100 and the source update timestamp.
 
+Physical idle servo motion is disabled: while AI.AGENT is waiting, Stack-chan
+does not install the randomized head-motion modifier. Intentional face, blink,
+breathing, and idle-expression animations remain enabled on the main display.
+
 ### Flash, key provisioning, and Wi-Fi
 
 Connect the CoreS3 USB data port and find its serial port (for example,

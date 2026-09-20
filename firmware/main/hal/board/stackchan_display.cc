@@ -23,6 +23,10 @@ using namespace stackchan::avatar;
 
 #define TAG "StackChanAvatarDisplay"
 
+namespace {
+constexpr bool kIdleServoMotionEnabled = false;
+}
+
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 LV_FONT_DECLARE(BUILTIN_ICON_FONT);
 LV_FONT_DECLARE(font_awesome_30_4);
@@ -279,8 +283,11 @@ void StackChanAvatarDisplay::SetupUI()
 
     // GetHAL().startStackChanAutoUpdate(24);
 
-    auto config        = hal_bridge::get_xiaozhi_config();
-    idle_motion_level_ = config.idleRandomMovementLevel;
+    auto config = hal_bridge::get_xiaozhi_config();
+    idle_motion_level_ =
+        kIdleServoMotionEnabled ? config.idleRandomMovementLevel : 0;
+    ESP_LOGI(TAG, "Idle servo motion: %s",
+             kIdleServoMotionEnabled ? "enabled" : "disabled");
 
     ESP_LOGI(TAG, "Avatar created and started");
 }
@@ -356,6 +363,8 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
         if (idle_motion_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_motion_modifier_id_);
             idle_motion_modifier_id_ = -1;
+        }
+        if (idle_expression_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_expression_modifier_id_);
             idle_expression_modifier_id_ = -1;
         }
@@ -533,12 +542,12 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
     }
 
     if (is_idle) {
-        // Start idle motion
-        ESP_LOGW(TAG, "Start idle motion");
-        if (idle_motion_modifier_id_ < 0) {
-            if (idle_motion_level_ > 0) {
-                CreateIdleMotionModifier();
-            }
+        // Preserve idle face animation, but do not create the physical
+        // IdleMotionModifier when idle servo motion is disabled.
+        if (idle_motion_level_ > 0 && idle_motion_modifier_id_ < 0) {
+            CreateIdleMotionModifier();
+        }
+        if (idle_expression_modifier_id_ < 0) {
             idle_expression_modifier_id_ = stackchan.addModifier(std::make_unique<IdleExpressionModifier>());
         }
 
@@ -549,6 +558,8 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
         if (idle_motion_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_motion_modifier_id_);
             idle_motion_modifier_id_ = -1;
+        }
+        if (idle_expression_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_expression_modifier_id_);
             idle_expression_modifier_id_ = -1;
         }
