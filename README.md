@@ -96,9 +96,11 @@ Glass2 returns 503. Serial logs the accepted percentage and timestamp. Port 8767
 binds only after station connectivity; there is no authentication in this MVP,
 so expose it only to a trusted LAN.
 
-Physical idle servo motion is disabled: while AI.AGENT is waiting, Stack-chan
-does not install the randomized head-motion modifier. Intentional face, blink,
-breathing, and idle-expression animations remain enabled on the main display.
+Autonomous physical servo motion is disabled. At avatar startup and each
+transition into standby, Stack-chan commands yaw and pitch to their calibrated
+home positions once, locks out servo-moving idle/head-pet/IMU modifiers, and
+does not enable speaking head motion. Face breathing, blink, idle-expression,
+and speaking-mouth animations remain enabled on the main display.
 
 ### Flash, key provisioning, and Wi-Fi
 
