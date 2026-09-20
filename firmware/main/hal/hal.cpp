@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hal.h"
+#include "glass2.h"
+#include <ctime>
 #include <memory>
 #include <mooncake_log.h>
 #include <nvs_flash.h>
@@ -33,6 +35,9 @@ void Hal::init()
     ESP_ERROR_CHECK(ret);
 
     xiaozhi_board_init();
+    if (glass2_init()) {
+        glass2_update_usage(73, static_cast<std::int64_t>(std::time(nullptr)));
+    }
     xiaozhi_mcp_init();
     head_touch_init();
     io_expander_init();

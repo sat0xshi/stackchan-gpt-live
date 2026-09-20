@@ -63,6 +63,21 @@ The committed defaults select `CONFIG_BOARD_TYPE_M5STACK_STACK_CHAN=y`, 16 MB
 flash, PSRAM, and the CoreS3 ESP32-S3 target. `set-target` creates an ignored
 local `sdkconfig`.
 
+### Unit Glass2 dummy usage display
+
+Connect an M5Stack Unit Glass2 to the CoreS3 black Port A Grove/HY2.0 I2C
+connector. This firmware uses the dedicated external bus (SDA GPIO2, SCL GPIO1)
+at the Glass2 default address `0x3C`; the internal GPIO12/GPIO11 bus and its
+power, touch, audio, IMU, RTC, and camera devices are unchanged.
+
+At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
+`Grok 73%`. Serial reports either `glass2: OK ...` or `glass2: not found`.
+A missing display is non-fatal and does not delay AI.AGENT startup beyond the
+short I2C probe. The value is not scraped from Grok and is not real usage data.
+Future HTTP/JSON integration should call the single
+`glass2_update_usage(percent, updated_at_unix_seconds)` function with an integer
+from 0 through 100 and the source update timestamp.
+
 ### Flash, key provisioning, and Wi-Fi
 
 Connect the CoreS3 USB data port and find its serial port (for example,
