@@ -101,6 +101,21 @@ const std::array<std::uint8_t, 5>& glyph(char character)
         {{0x3f, 0x40, 0x38, 0x40, 0x3f}}, {{0x63, 0x14, 0x08, 0x14, 0x63}},
         {{0x07, 0x08, 0x70, 0x08, 0x07}}, {{0x61, 0x51, 0x49, 0x45, 0x43}},
     };
+    static constexpr std::array<std::uint8_t, 5> lowercase[] = {
+        {{0x20, 0x54, 0x54, 0x54, 0x78}}, {{0x7f, 0x48, 0x44, 0x44, 0x38}},
+        {{0x38, 0x44, 0x44, 0x44, 0x20}}, {{0x38, 0x44, 0x44, 0x48, 0x7f}},
+        {{0x38, 0x54, 0x54, 0x54, 0x18}}, {{0x08, 0x7e, 0x09, 0x01, 0x02}},
+        {{0x0c, 0x52, 0x52, 0x52, 0x3e}}, {{0x7f, 0x08, 0x04, 0x04, 0x78}},
+        {{0x00, 0x44, 0x7d, 0x40, 0x00}}, {{0x20, 0x40, 0x44, 0x3d, 0x00}},
+        {{0x7f, 0x10, 0x28, 0x44, 0x00}}, {{0x00, 0x41, 0x7f, 0x40, 0x00}},
+        {{0x7c, 0x04, 0x18, 0x04, 0x78}}, {{0x7c, 0x08, 0x04, 0x04, 0x78}},
+        {{0x38, 0x44, 0x44, 0x44, 0x38}}, {{0x7c, 0x14, 0x14, 0x14, 0x08}},
+        {{0x08, 0x14, 0x14, 0x18, 0x7c}}, {{0x7c, 0x08, 0x04, 0x04, 0x08}},
+        {{0x48, 0x54, 0x54, 0x54, 0x20}}, {{0x04, 0x3f, 0x44, 0x40, 0x20}},
+        {{0x3c, 0x40, 0x40, 0x20, 0x7c}}, {{0x1c, 0x20, 0x40, 0x20, 0x1c}},
+        {{0x3c, 0x40, 0x30, 0x40, 0x3c}}, {{0x44, 0x28, 0x10, 0x28, 0x44}},
+        {{0x0c, 0x50, 0x50, 0x50, 0x3c}}, {{0x44, 0x64, 0x54, 0x4c, 0x44}},
+    };
     static constexpr std::array<std::uint8_t, 5> percent = {0x63, 0x13, 0x08, 0x64, 0x63};
     static constexpr std::array<std::uint8_t, 5> question = {0x02, 0x01, 0x51, 0x09, 0x06};
 
@@ -109,6 +124,9 @@ const std::array<std::uint8_t, 5>& glyph(char character)
     }
     if (character >= 'A' && character <= 'Z') {
         return uppercase[character - 'A'];
+    }
+    if (character >= 'a' && character <= 'z') {
+        return lowercase[character - 'a'];
     }
     switch (character) {
         case '%':
@@ -131,8 +149,8 @@ void set_pixel(int x, int y)
 void draw_text(const char* text, int cursor_y)
 {
     constexpr int scale = 2;
-    constexpr int character_width = 6 * scale;
-    const int text_width = static_cast<int>(std::strlen(text)) * character_width - scale;
+    constexpr int character_width = 5 * scale + 1;
+    const int text_width = static_cast<int>(std::strlen(text)) * character_width - 1;
     int cursor_x = (kWidth - text_width) / 2;
 
     for (; *text != '\0'; ++text, cursor_x += character_width) {
@@ -152,21 +170,18 @@ void draw_text(const char* text, int cursor_y)
     }
 }
 
-char service_label(const char* id)
+const char* service_label(const char* id)
 {
     if (std::strcmp(id, "grok") == 0) {
-        return 'G';
+        return "Grok";
     }
     if (std::strcmp(id, "claude") == 0) {
-        return 'C';
+        return "Claude";
     }
     if (std::strcmp(id, "codex") == 0) {
-        return 'X';
+        return "Codex";
     }
-
-    const unsigned char first = static_cast<unsigned char>(id[0]);
-    const char label = static_cast<char>(std::toupper(first));
-    return label >= 'A' && label <= 'Z' ? label : '?';
+    return id;
 }
 
 esp_err_t redraw_usage()
@@ -191,8 +206,8 @@ esp_err_t redraw_usage()
             continue;
         }
 
-        char line[12];
-        std::snprintf(line, sizeof(line), "%c %d%%", service_label(slot.id.data()), slot.percent);
+        char line[16];
+        std::snprintf(line, sizeof(line), "%.6s %d%%", service_label(slot.id.data()), slot.percent);
         draw_text(line, cursor_y);
         cursor_y += kLineStep;
     }

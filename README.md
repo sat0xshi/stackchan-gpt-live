@@ -76,9 +76,9 @@ At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
 On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
 short I2C probe. The boot value is not scraped from Grok and is not real usage
-data. The display retains up to three service slots and renders compact `G`,
-`C`, and `X` labels for Grok, Claude, and Codex; other IDs use their first
-letter when a slot is available.
+data. The display retains up to three service slots and renders full known
+labels such as `Grok 7%`, `Claude 12%`, and `Codex 3%`; other IDs use up to
+their first six characters when a slot is available.
 
 After the Wi-Fi station connects, nanami can replace the boot dummy over the
 LAN-only, unauthenticated endpoint at
