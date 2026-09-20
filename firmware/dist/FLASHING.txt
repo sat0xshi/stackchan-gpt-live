@@ -1,10 +1,10 @@
-StackChan GPT-Live CoreS3 build 3b0ee3e
+StackChan GPT-Live CoreS3 build 6000a7d
 ESP32-S3, 16 MB flash, DIO, 80 MHz
 Live continuity: Realtime input remains active while responses play.
 Delegation: economical GPT-5.6 Terra reasoning with on-demand web search.
 Boot behavior: AI.AGENT opens through Launcher and starts GPT-Live automatically.
 Glass2: red Grove Port A shows rotated dummy "Grok 73%".
-Usage ingest: LAN-only POST http://STACKCHAN_IP:8767/usage after Wi-Fi connects.
+Usage ingest: LAN-only POST supports Grok-only or three-service retained slots.
 Motion: autonomous servo modifiers are disabled; standby commands calibrated home once.
 
 Install the flasher only (ESP-IDF is not required):
