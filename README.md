@@ -76,9 +76,9 @@ At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
 On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
 short I2C probe. The boot value is not scraped from Grok and is not real usage
-data. The display retains up to three service slots and renders full known
-labels such as `Grok 7%`, `Claude 12%`, and `Codex 3%`; other IDs use up to
-their first six characters when a slot is available.
+data. The display retains up to four service slots and renders full known
+labels such as `Grok 7%`, `Claude 12%`, `Codex 3%`, and `OpenCode ∞`; other IDs
+use up to their first eight characters when a slot is available.
 
 After the Wi-Fi station connects, nanami can replace the boot dummy over the
 LAN-only, unauthenticated endpoint at
@@ -91,13 +91,14 @@ curl -i -X POST "http://<stackchan-ip>:8767/usage" \
   -d '{"percent":61,"updatedAt":1758336000}'
 ```
 
-The multi-service payload updates one to three supplied IDs atomically; omitted
-IDs retain their previous values:
+The multi-service payload updates one to four supplied IDs atomically; omitted
+IDs retain their previous values. An item with `infinite: true` may omit
+`percent` (or set it to null) and displays an infinity symbol:
 
 ```bash
 curl -i -X POST "http://<stackchan-ip>:8767/usage" \
   -H "Content-Type: application/json" \
-  -d '{"items":[{"id":"grok","percent":7},{"id":"claude","percent":12},{"id":"codex","percent":3}],"updatedAt":1758335000}'
+  -d '{"items":[{"id":"grok","percent":8},{"id":"claude","percent":1},{"id":"codex","percent":17},{"id":"opencode","infinite":true}],"updatedAt":1758335000}'
 ```
 
 Percentages must be integers from 0 through 100. `updatedAt` is a Unix-seconds

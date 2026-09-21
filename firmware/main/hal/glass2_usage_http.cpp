@@ -90,15 +90,27 @@ esp_err_t usage_handler(httpd_req_t* request)
 
             const ArduinoJson::JsonVariantConst id_value = value["id"];
             const ArduinoJson::JsonVariantConst percent_value = value["percent"];
-            if (!id_value.is<const char*>() || !percent_value.is<int>()) {
-                ESP_LOGW(kTag, "usage http: item id must be a string and percent must be an integer");
+            const ArduinoJson::JsonVariantConst infinite_value = value["infinite"];
+            if (!id_value.is<const char*>()) {
+                ESP_LOGW(kTag, "usage http: item id must be a string");
+                return send_json(request, "400 Bad Request", R"({"ok":false})");
+            }
+            if (!infinite_value.isNull() && !infinite_value.is<bool>()) {
+                ESP_LOGW(kTag, "usage http: item infinite must be a boolean");
                 return send_json(request, "400 Bad Request", R"({"ok":false})");
             }
 
             const char* id = id_value.as<const char*>();
-            const int percent = percent_value.as<int>();
+            const bool infinite = infinite_value.is<bool>() && infinite_value.as<bool>();
+            if (!infinite && !percent_value.is<int>()) {
+                ESP_LOGW(kTag, "usage http: finite item percent must be an integer");
+                return send_json(request, "400 Bad Request", R"({"ok":false})");
+            }
+
+            const int percent = infinite ? 0 : percent_value.as<int>();
             const std::size_t id_length = id == nullptr ? 0 : std::strlen(id);
-            if (id_length == 0 || id_length > kMaxServiceIdLength || percent < 0 || percent > 100) {
+            if (id_length == 0 || id_length > kMaxServiceIdLength ||
+                (!infinite && (percent < 0 || percent > 100))) {
                 ESP_LOGW(kTag, "usage http: invalid item at index %u", static_cast<unsigned>(index));
                 return send_json(request, "400 Bad Request", R"({"ok":false})");
             }
@@ -106,6 +118,7 @@ esp_err_t usage_handler(httpd_req_t* request)
             usage_items[index++] = {
                 .id = id,
                 .percent = percent,
+                .infinite = infinite,
             };
         }
         updated = glass2_update_usage_items(usage_items.data(), index, updated_at);

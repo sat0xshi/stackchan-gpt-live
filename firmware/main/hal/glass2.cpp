@@ -36,6 +36,7 @@ std::mutex s_mutex;
 struct UsageSlot {
     std::array<char, kMaxServiceIdLength + 1> id{};
     int percent = 0;
+    bool infinite = false;
     bool occupied = false;
 };
 
@@ -118,6 +119,7 @@ const std::array<std::uint8_t, 5>& glyph(char character)
     };
     static constexpr std::array<std::uint8_t, 5> percent = {0x63, 0x13, 0x08, 0x64, 0x63};
     static constexpr std::array<std::uint8_t, 5> question = {0x02, 0x01, 0x51, 0x09, 0x06};
+    static constexpr std::array<std::uint8_t, 5> infinity = {0x1c, 0x22, 0x14, 0x22, 0x1c};
 
     if (character >= '0' && character <= '9') {
         return digits[character - '0'];
@@ -133,6 +135,8 @@ const std::array<std::uint8_t, 5>& glyph(char character)
             return percent;
         case '?':
             return question;
+        case '~':
+            return infinity;
         default:
             return blank;
     }
@@ -148,8 +152,8 @@ void set_pixel(int x, int y)
 
 void draw_text(const char* text, int cursor_y)
 {
-    constexpr int scale = 2;
-    constexpr int character_width = 5 * scale + 1;
+    const int scale = std::strlen(text) <= 11 ? 2 : 1;
+    const int character_width = 5 * scale + 1;
     const int text_width = static_cast<int>(std::strlen(text)) * character_width - 1;
     int cursor_x = (kWidth - text_width) / 2;
 
@@ -181,13 +185,15 @@ const char* service_label(const char* id)
     if (std::strcmp(id, "codex") == 0) {
         return "Codex";
     }
+    if (std::strcmp(id, "opencode") == 0) {
+        return "OpenCode";
+    }
     return id;
 }
 
 esp_err_t redraw_usage()
 {
     constexpr int kLineHeight = 14;
-    constexpr int kLineStep = 21;
 
     int occupied_count = 0;
     for (const auto& slot : s_usage_slots) {
@@ -199,17 +205,23 @@ esp_err_t redraw_usage()
         return flush_framebuffer();
     }
 
-    const int content_height = kLineHeight + (occupied_count - 1) * kLineStep;
+    const int line_step = occupied_count == 4 ? 16 : 21;
+    const int content_height = kLineHeight + (occupied_count - 1) * line_step;
     int cursor_y = (kHeight - content_height) / 2;
     for (const auto& slot : s_usage_slots) {
         if (!slot.occupied) {
             continue;
         }
 
-        char line[16];
-        std::snprintf(line, sizeof(line), "%.6s %d%%", service_label(slot.id.data()), slot.percent);
+        char line[20];
+        if (slot.infinite) {
+            // '~' maps to the custom 5x7 infinity bitmap in glyph().
+            std::snprintf(line, sizeof(line), "%.8s ~", service_label(slot.id.data()));
+        } else {
+            std::snprintf(line, sizeof(line), "%.8s %d%%", service_label(slot.id.data()), slot.percent);
+        }
         draw_text(line, cursor_y);
-        cursor_y += kLineStep;
+        cursor_y += line_step;
     }
     return flush_framebuffer();
 }
@@ -390,6 +402,7 @@ bool glass2_update_usage(int percent, std::int64_t updated_at_unix_seconds)
     const Glass2UsageItem item = {
         .id = "grok",
         .percent = percent,
+        .infinite = false,
     };
     return glass2_update_usage_items(&item, 1, updated_at_unix_seconds);
 }
@@ -404,7 +417,7 @@ bool glass2_update_usage_items(const Glass2UsageItem* items, std::size_t count,
 
     std::array<std::array<char, kMaxServiceIdLength + 1>, GLASS2_USAGE_SLOT_COUNT> normalized_ids{};
     for (std::size_t i = 0; i < count; ++i) {
-        if (items[i].percent < 0 || items[i].percent > 100 ||
+        if ((!items[i].infinite && (items[i].percent < 0 || items[i].percent > 100)) ||
             !normalize_service_id(items[i].id, normalized_ids[i])) {
             ESP_LOGW(kTag, "glass2: rejected usage item %u", static_cast<unsigned>(i));
             return false;
@@ -440,8 +453,14 @@ bool glass2_update_usage_items(const Glass2UsageItem* items, std::size_t count,
         }
 
         target->percent = items[i].percent;
-        ESP_LOGI(kTag, "glass2: service=%s usage=%d updated_at=%lld", target->id.data(), target->percent,
-                 static_cast<long long>(updated_at_unix_seconds));
+        target->infinite = items[i].infinite;
+        if (target->infinite) {
+            ESP_LOGI(kTag, "glass2: service=%s usage=infinite updated_at=%lld", target->id.data(),
+                     static_cast<long long>(updated_at_unix_seconds));
+        } else {
+            ESP_LOGI(kTag, "glass2: service=%s usage=%d updated_at=%lld", target->id.data(), target->percent,
+                     static_cast<long long>(updated_at_unix_seconds));
+        }
     }
     s_updated_at_unix_seconds = updated_at_unix_seconds;
 
