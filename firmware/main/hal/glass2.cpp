@@ -119,7 +119,6 @@ const std::array<std::uint8_t, 5>& glyph(char character)
     };
     static constexpr std::array<std::uint8_t, 5> percent = {0x63, 0x13, 0x08, 0x64, 0x63};
     static constexpr std::array<std::uint8_t, 5> question = {0x02, 0x01, 0x51, 0x09, 0x06};
-    static constexpr std::array<std::uint8_t, 5> infinity = {0x1c, 0x22, 0x14, 0x22, 0x1c};
 
     if (character >= '0' && character <= '9') {
         return digits[character - '0'];
@@ -135,8 +134,6 @@ const std::array<std::uint8_t, 5>& glyph(char character)
             return percent;
         case '?':
             return question;
-        case '~':
-            return infinity;
         default:
             return blank;
     }
@@ -150,13 +147,15 @@ void set_pixel(int x, int y)
     s_framebuffer[x + (y / 8) * kWidth] |= static_cast<std::uint8_t>(1U << (y & 7));
 }
 
-void draw_text(const char* text, int cursor_y)
+int text_width(const char* text, int scale)
 {
-    const int scale = std::strlen(text) <= 11 ? 2 : 1;
     const int character_width = 5 * scale + 1;
-    const int text_width = static_cast<int>(std::strlen(text)) * character_width - 1;
-    int cursor_x = (kWidth - text_width) / 2;
+    return static_cast<int>(std::strlen(text)) * character_width - 1;
+}
 
+void draw_text_at(const char* text, int cursor_x, int cursor_y, int scale)
+{
+    const int character_width = 5 * scale + 1;
     for (; *text != '\0'; ++text, cursor_x += character_width) {
         const auto& columns = glyph(*text);
         for (int column = 0; column < static_cast<int>(columns.size()); ++column) {
@@ -169,6 +168,41 @@ void draw_text(const char* text, int cursor_y)
                         set_pixel(cursor_x + column * scale + dx, cursor_y + row * scale + dy);
                     }
                 }
+            }
+        }
+    }
+}
+
+void draw_text(const char* text, int cursor_y)
+{
+    const int scale = std::strlen(text) <= 11 ? 2 : 1;
+    const int width = text_width(text, scale);
+    draw_text_at(text, (kWidth - width) / 2, cursor_y, scale);
+}
+
+void draw_infinite_dots(const char* label, int cursor_y)
+{
+    constexpr int kScale = 2;
+    constexpr int kDotCount = 4;
+    constexpr int kDotSize = 3;
+    constexpr int kDotGap = 3;
+    constexpr int kLabelGap = 4;
+
+    char truncated_label[9];
+    std::snprintf(truncated_label, sizeof(truncated_label), "%.8s", label);
+    const int label_width = text_width(truncated_label, kScale);
+    const int dots_width = kDotCount * kDotSize + (kDotCount - 1) * kDotGap;
+    const int total_width = label_width + kLabelGap + dots_width;
+    const int start_x = (kWidth - total_width) / 2;
+
+    draw_text_at(truncated_label, start_x, cursor_y, kScale);
+    const int dots_x = start_x + label_width + kLabelGap;
+    const int dots_y = cursor_y + 6;
+    for (int dot = 0; dot < kDotCount; ++dot) {
+        const int dot_x = dots_x + dot * (kDotSize + kDotGap);
+        for (int dx = 0; dx < kDotSize; ++dx) {
+            for (int dy = 0; dy < kDotSize; ++dy) {
+                set_pixel(dot_x + dx, dots_y + dy);
             }
         }
     }
@@ -215,12 +249,11 @@ esp_err_t redraw_usage()
 
         char line[20];
         if (slot.infinite) {
-            // '~' maps to the custom 5x7 infinity bitmap in glyph().
-            std::snprintf(line, sizeof(line), "%.8s ~", service_label(slot.id.data()));
+            draw_infinite_dots(service_label(slot.id.data()), cursor_y);
         } else {
             std::snprintf(line, sizeof(line), "%.8s %d%%", service_label(slot.id.data()), slot.percent);
+            draw_text(line, cursor_y);
         }
-        draw_text(line, cursor_y);
         cursor_y += line_step;
     }
     return flush_framebuffer();

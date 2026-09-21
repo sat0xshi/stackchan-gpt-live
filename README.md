@@ -77,8 +77,8 @@ On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
 short I2C probe. The boot value is not scraped from Grok and is not real usage
 data. The display retains up to four service slots and renders full known
-labels such as `Grok 7%`, `Claude 12%`, `Codex 3%`, and `OpenCode ∞`; other IDs
-use up to their first eight characters when a slot is available.
+labels such as `Grok 7%`, `Claude 12%`, `Codex 3%`, and `OpenCode ····`; other
+IDs use up to their first eight characters when a slot is available.
 
 After the Wi-Fi station connects, nanami can replace the boot dummy over the
 LAN-only, unauthenticated endpoint at
@@ -93,7 +93,7 @@ curl -i -X POST "http://<stackchan-ip>:8767/usage" \
 
 The multi-service payload updates one to four supplied IDs atomically; omitted
 IDs retain their previous values. An item with `infinite: true` may omit
-`percent` (or set it to null) and displays an infinity symbol:
+`percent` (or set it to null) and displays four festive dots after its label:
 
 ```bash
 curl -i -X POST "http://<stackchan-ip>:8767/usage" \
