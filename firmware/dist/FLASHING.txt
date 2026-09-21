@@ -1,10 +1,10 @@
-StackChan GPT-Live CoreS3 build 288176f
+StackChan GPT-Live CoreS3 build 101e377
 ESP32-S3, 16 MB flash, DIO, 80 MHz
 Live continuity: Realtime input remains active while responses play.
 Delegation: economical GPT-5.6 Terra reasoning with on-demand web search.
 Boot behavior: AI.AGENT opens through Launcher and starts GPT-Live automatically.
 Glass2: red Grove Port A shows rotated dummy "Grok 73%".
-Usage ingest: infinite slots render four festive dots after the full label.
+Usage ingest: infinite slots render a dotted two-loop infinity after the label.
 Motion: autonomous servo modifiers are disabled; standby commands calibrated home once.
 
 Install the flasher only (ESP-IDF is not required):
