@@ -180,29 +180,32 @@ void draw_text(const char* text, int cursor_y)
     draw_text_at(text, (kWidth - width) / 2, cursor_y, scale);
 }
 
-void draw_infinite_dots(const char* label, int cursor_y)
+void draw_dotted_infinity(const char* label, int cursor_y)
 {
     constexpr int kScale = 2;
-    constexpr int kDotCount = 4;
-    constexpr int kDotSize = 3;
-    constexpr int kDotGap = 3;
-    constexpr int kLabelGap = 4;
+    constexpr int kDotSize = 2;
+    constexpr int kLabelGap = 5;
+    constexpr std::array<std::array<int, 2>, 16> kInfinityDots = {{
+        {{0, 4}}, {{2, 1}}, {{5, 0}}, {{8, 2}},
+        {{10, 4}}, {{8, 6}}, {{5, 8}}, {{2, 7}},
+        {{10, 4}}, {{12, 2}}, {{15, 0}}, {{18, 1}},
+        {{20, 4}}, {{18, 7}}, {{15, 8}}, {{12, 6}},
+    }};
+    constexpr int kInfinityWidth = 20 + kDotSize;
 
     char truncated_label[9];
     std::snprintf(truncated_label, sizeof(truncated_label), "%.8s", label);
     const int label_width = text_width(truncated_label, kScale);
-    const int dots_width = kDotCount * kDotSize + (kDotCount - 1) * kDotGap;
-    const int total_width = label_width + kLabelGap + dots_width;
+    const int total_width = label_width + kLabelGap + kInfinityWidth;
     const int start_x = (kWidth - total_width) / 2;
 
     draw_text_at(truncated_label, start_x, cursor_y, kScale);
-    const int dots_x = start_x + label_width + kLabelGap;
-    const int dots_y = cursor_y + 6;
-    for (int dot = 0; dot < kDotCount; ++dot) {
-        const int dot_x = dots_x + dot * (kDotSize + kDotGap);
+    const int infinity_x = start_x + label_width + kLabelGap;
+    const int infinity_y = cursor_y + 2;
+    for (const auto& dot : kInfinityDots) {
         for (int dx = 0; dx < kDotSize; ++dx) {
             for (int dy = 0; dy < kDotSize; ++dy) {
-                set_pixel(dot_x + dx, dots_y + dy);
+                set_pixel(infinity_x + dot[0] + dx, infinity_y + dot[1] + dy);
             }
         }
     }
@@ -249,7 +252,7 @@ esp_err_t redraw_usage()
 
         char line[20];
         if (slot.infinite) {
-            draw_infinite_dots(service_label(slot.id.data()), cursor_y);
+            draw_dotted_infinity(service_label(slot.id.data()), cursor_y);
         } else {
             std::snprintf(line, sizeof(line), "%.8s %d%%", service_label(slot.id.data()), slot.percent);
             draw_text(line, cursor_y);
