@@ -52,6 +52,7 @@ struct PersistedUsageSlot {
     std::int32_t percent = 0;
     std::uint8_t infinite = 0;
     std::uint8_t occupied = 0;
+    std::array<std::uint8_t, 2> reserved{};
 };
 
 struct PersistedUsageState {
