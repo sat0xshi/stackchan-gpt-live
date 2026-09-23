@@ -1,4 +1,4 @@
-StackChan GPT-Live CoreS3 build 101e377
+StackChan GPT-Live CoreS3 build ce093c6
 ESP32-S3, 16 MB flash, DIO, 80 MHz
 Live continuity: Realtime input remains active while responses play.
 Delegation: economical GPT-5.6 Terra reasoning with on-demand web search.
