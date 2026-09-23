@@ -5,6 +5,7 @@ Delegation: economical GPT-5.6 Terra reasoning with on-demand web search.
 Boot behavior: AI.AGENT opens through Launcher and starts GPT-Live automatically.
 Glass2: red Grove Port A shows rotated dummy "Grok 73%".
 Usage ingest: infinite slots render a dotted two-loop infinity after the label.
+Usage persistence: accepted slots survive reboot in NVS namespace glass2, key usage.
 Motion: autonomous servo modifiers are disabled; standby commands calibrated home once.
 
 Install the flasher only (ESP-IDF is not required):
@@ -23,3 +24,5 @@ No file contains an OpenAI key or other secret. The merged image spans the NVS
 address range with erased (0xFF) bytes, so flashing it resets NVS, Wi-Fi, and
 settings. Use the individual-image command to preserve existing NVS. Running
 erase_flash also removes NVS and requires key provisioning plus Wi-Fi setup.
+The same erase/reset behavior removes saved Glass2 slots; otherwise app-only
+updates and ordinary reboots preserve and redraw the last accepted slots.

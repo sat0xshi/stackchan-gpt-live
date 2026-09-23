@@ -71,8 +71,12 @@ GPIO1); the black Grove connector is not Port A. The firmware accepts Glass2
 address `0x3C` or solder-selected `0x3D`; the internal GPIO12/GPIO11 bus and its
 power, touch, audio, IMU, RTC, and camera devices are unchanged.
 
-At boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
-`Grok 73%`. Serial reports either `glass2: OK ...` or `glass2: not found`.
+On first boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
+`Grok 73%`. After the first accepted usage POST, all retained slots and their
+timestamp are saved under NVS namespace `glass2`, key `usage`; later boots load
+and redraw those slots instead of repainting the dummy. This fixes the previous
+RAM-only behavior that made Claude, Codex, and OpenCode vanish after a reboot.
+Serial reports either `glass2: OK ...` or `glass2: not found`.
 On detection failure it also logs every responding Port A I2C address.
 A missing display is non-fatal and does not delay AI.AGENT startup beyond the
 short I2C probe. The boot value is not scraped from Grok and is not real usage
@@ -107,8 +111,9 @@ Percentages must be integers from 0 through 100. `updatedAt` is a Unix-seconds
 integer; `updated_at` is also accepted. Success returns `200 {"ok":true}`;
 malformed or out-of-range input returns 400, and a missing/unavailable Glass2
 returns 503. Serial logs each accepted service and timestamp. Port 8767 binds
-only after station connectivity; there is no authentication in this MVP, so
-expose it only to a trusted LAN.
+only after station connectivity; USB-C is not needed at runtime, so battery and
+Wi-Fi are sufficient. There is no authentication in this MVP, so expose it only
+to a trusted LAN. Partial POSTs retain omitted service IDs in both RAM and NVS.
 
 Autonomous physical servo motion is disabled. At avatar startup and each
 transition into standby, Stack-chan commands yaw and pitch to their calibrated

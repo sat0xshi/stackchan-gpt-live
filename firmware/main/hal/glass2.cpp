@@ -13,6 +13,7 @@
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <nvs.h>
 
 namespace {
 
@@ -26,6 +27,9 @@ constexpr int kWidth = 128;
 constexpr int kHeight = 64;
 constexpr int kBufferSize = kWidth * kHeight / 8;
 constexpr std::size_t kMaxServiceIdLength = 15;
+constexpr char kNvsNamespace[] = "glass2";
+constexpr char kNvsUsageKey[] = "usage";
+constexpr std::uint8_t kPersistedUsageVersion = 1;
 
 i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_device = nullptr;
@@ -42,6 +46,20 @@ struct UsageSlot {
 
 std::array<UsageSlot, GLASS2_USAGE_SLOT_COUNT> s_usage_slots{};
 std::int64_t s_updated_at_unix_seconds = 0;
+
+struct PersistedUsageSlot {
+    std::array<char, kMaxServiceIdLength + 1> id{};
+    std::int32_t percent = 0;
+    std::uint8_t infinite = 0;
+    std::uint8_t occupied = 0;
+};
+
+struct PersistedUsageState {
+    std::uint8_t version = kPersistedUsageVersion;
+    std::array<std::uint8_t, 7> reserved{};
+    std::int64_t updated_at_unix_seconds = 0;
+    std::array<PersistedUsageSlot, GLASS2_USAGE_SLOT_COUNT> slots{};
+};
 
 esp_err_t write_commands(const std::uint8_t* commands, std::size_t length)
 {
@@ -281,6 +299,97 @@ bool normalize_service_id(const char* id, std::array<char, kMaxServiceIdLength +
     return true;
 }
 
+bool load_usage()
+{
+    nvs_handle_t handle = 0;
+    esp_err_t error = nvs_open(kNvsNamespace, NVS_READONLY, &handle);
+    if (error == ESP_ERR_NVS_NOT_FOUND) {
+        return false;
+    }
+    if (error != ESP_OK) {
+        ESP_LOGW(kTag, "glass2: usage restore open failed: %s", esp_err_to_name(error));
+        return false;
+    }
+
+    PersistedUsageState persisted;
+    std::size_t size = sizeof(persisted);
+    error = nvs_get_blob(handle, kNvsUsageKey, &persisted, &size);
+    nvs_close(handle);
+    if (error == ESP_ERR_NVS_NOT_FOUND) {
+        return false;
+    }
+    if (error != ESP_OK || size != sizeof(persisted) || persisted.version != kPersistedUsageVersion) {
+        ESP_LOGW(kTag, "glass2: ignored invalid persisted usage");
+        return false;
+    }
+
+    std::array<UsageSlot, GLASS2_USAGE_SLOT_COUNT> restored_slots{};
+    int restored_count = 0;
+    for (std::size_t i = 0; i < persisted.slots.size(); ++i) {
+        const auto& source = persisted.slots[i];
+        if (source.occupied > 1 || source.infinite > 1) {
+            ESP_LOGW(kTag, "glass2: ignored invalid persisted usage slot %u", static_cast<unsigned>(i));
+            return false;
+        }
+        if (source.occupied == 0) {
+            continue;
+        }
+
+        std::array<char, kMaxServiceIdLength + 1> normalized_id{};
+        if (source.id.back() != '\0' || !normalize_service_id(source.id.data(), normalized_id) ||
+            normalized_id != source.id || (!source.infinite && (source.percent < 0 || source.percent > 100))) {
+            ESP_LOGW(kTag, "glass2: ignored invalid persisted usage slot %u", static_cast<unsigned>(i));
+            return false;
+        }
+
+        restored_slots[i].id = source.id;
+        restored_slots[i].percent = source.percent;
+        restored_slots[i].infinite = source.infinite != 0;
+        restored_slots[i].occupied = true;
+        ++restored_count;
+    }
+    if (restored_count == 0) {
+        return false;
+    }
+
+    s_usage_slots = restored_slots;
+    s_updated_at_unix_seconds = persisted.updated_at_unix_seconds;
+    ESP_LOGI(kTag, "glass2: restored %d usage slot(s) updated_at=%lld", restored_count,
+             static_cast<long long>(s_updated_at_unix_seconds));
+    return true;
+}
+
+bool persist_usage()
+{
+    PersistedUsageState persisted;
+    persisted.updated_at_unix_seconds = s_updated_at_unix_seconds;
+    for (std::size_t i = 0; i < s_usage_slots.size(); ++i) {
+        persisted.slots[i].id = s_usage_slots[i].id;
+        persisted.slots[i].percent = s_usage_slots[i].percent;
+        persisted.slots[i].infinite = s_usage_slots[i].infinite ? 1 : 0;
+        persisted.slots[i].occupied = s_usage_slots[i].occupied ? 1 : 0;
+    }
+
+    nvs_handle_t handle = 0;
+    esp_err_t error = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
+    if (error == ESP_OK) {
+        error = nvs_set_blob(handle, kNvsUsageKey, &persisted, sizeof(persisted));
+    }
+    if (error == ESP_OK) {
+        error = nvs_commit(handle);
+    }
+    if (handle != 0) {
+        nvs_close(handle);
+    }
+    if (error != ESP_OK) {
+        ESP_LOGW(kTag, "glass2: usage persist failed: %s", esp_err_to_name(error));
+        return false;
+    }
+
+    ESP_LOGI(kTag, "glass2: persisted usage to NVS namespace=%s key=%s", kNvsNamespace, kNvsUsageKey);
+    return true;
+}
+
 void release_bus()
 {
     if (s_device != nullptr) {
@@ -420,10 +529,18 @@ bool glass2_init()
         return false;
     }
 
-    s_framebuffer.fill(0);
-    error = flush_framebuffer();
+    s_usage_slots = {};
+    s_updated_at_unix_seconds = 0;
+    if (!load_usage()) {
+        s_usage_slots[0].id = {'g', 'r', 'o', 'k', '\0'};
+        s_usage_slots[0].percent = 73;
+        s_usage_slots[0].occupied = true;
+        ESP_LOGI(kTag, "glass2: no persisted usage; showing boot dummy Grok 73%%");
+    }
+
+    error = redraw_usage();
     if (error != ESP_OK) {
-        ESP_LOGW(kTag, "glass2: not found (clear: %s)", esp_err_to_name(error));
+        ESP_LOGW(kTag, "glass2: not found (initial redraw: %s)", esp_err_to_name(error));
         release_bus();
         return false;
     }
@@ -508,5 +625,5 @@ bool glass2_update_usage_items(const Glass2UsageItem* items, std::size_t count,
 
     ESP_LOGI(kTag, "glass2: usage display refreshed updated_at=%lld",
              static_cast<long long>(s_updated_at_unix_seconds));
-    return true;
+    return persist_usage();
 }
