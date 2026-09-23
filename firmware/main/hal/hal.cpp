@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hal.h"
+#include "glass2.h"
 #include <memory>
 #include <mooncake_log.h>
 #include <nvs_flash.h>
@@ -32,7 +33,10 @@ void Hal::init()
     }
     ESP_ERROR_CHECK(ret);
 
+    // Board construction initializes the internal AXP2101 and AW9523 first,
+    // including CoreS3 power rails. Glass2 then owns the separate Port A bus.
     xiaozhi_board_init();
+    glass2_init();
     xiaozhi_mcp_init();
     head_touch_init();
     io_expander_init();

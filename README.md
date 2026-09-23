@@ -63,6 +63,64 @@ The committed defaults select `CONFIG_BOARD_TYPE_M5STACK_STACK_CHAN=y`, 16 MB
 flash, PSRAM, and the CoreS3 ESP32-S3 target. `set-target` creates an ignored
 local `sdkconfig`.
 
+### Unit Glass2 usage display
+
+Connect an M5Stack Unit Glass2 to the **red** Grove/HY2.0 connector on this
+Stack-chan body. That connector is electrically CoreS3 Port A (SDA GPIO2, SCL
+GPIO1); the black Grove connector is not Port A. The firmware accepts Glass2
+address `0x3C` or solder-selected `0x3D`; the internal GPIO12/GPIO11 bus and its
+power, touch, audio, IMU, RTC, and camera devices are unchanged.
+
+On first boot the 128x64 monochrome SSD1309 display shows the MVP dummy value
+`Grok 73%`. After the first accepted usage POST, all retained slots and their
+timestamp are saved under NVS namespace `glass2`, key `usage`; later boots load
+and redraw those slots instead of repainting the dummy. This fixes the previous
+RAM-only behavior that made Claude, Codex, and OpenCode vanish after a reboot.
+Serial reports either `glass2: OK ...` or `glass2: not found`.
+On detection failure it also logs every responding Port A I2C address.
+A missing display is non-fatal and does not delay AI.AGENT startup beyond the
+short I2C probe. The boot value is not scraped from Grok and is not real usage
+data. The display retains up to four service slots and renders full known
+labels such as `Grok 7%`, `Claude 12%`, and `Codex 3%`. An infinite OpenCode
+slot shows `OpenCode` followed by a small infinity outline composed of discrete
+pixel dots; other IDs use up to their first eight characters when space allows.
+
+After the Wi-Fi station connects, nanami can replace the boot dummy over the
+LAN-only, unauthenticated endpoint at
+`http://<stackchan-ip>:8767/usage`. The backward-compatible payload updates
+Grok only:
+
+```bash
+curl -i -X POST "http://<stackchan-ip>:8767/usage" \
+  -H "Content-Type: application/json" \
+  -d '{"percent":61,"updatedAt":1758336000}'
+```
+
+The multi-service payload updates one to four supplied IDs atomically; omitted
+IDs retain their previous values. An item with `infinite: true` may omit
+`percent` (or set it to null) and displays the dotted infinity shape after its
+label:
+
+```bash
+curl -i -X POST "http://<stackchan-ip>:8767/usage" \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"id":"grok","percent":8},{"id":"claude","percent":1},{"id":"codex","percent":17},{"id":"opencode","infinite":true}],"updatedAt":1758335000}'
+```
+
+Percentages must be integers from 0 through 100. `updatedAt` is a Unix-seconds
+integer; `updated_at` is also accepted. Success returns `200 {"ok":true}`;
+malformed or out-of-range input returns 400, and a missing/unavailable Glass2
+returns 503. Serial logs each accepted service and timestamp. Port 8767 binds
+only after station connectivity; USB-C is not needed at runtime, so battery and
+Wi-Fi are sufficient. There is no authentication in this MVP, so expose it only
+to a trusted LAN. Partial POSTs retain omitted service IDs in both RAM and NVS.
+
+Autonomous physical servo motion is disabled. At avatar startup and each
+transition into standby, Stack-chan commands yaw and pitch to their calibrated
+home positions once, locks out servo-moving idle/head-pet/IMU modifiers, and
+does not enable speaking head motion. Face breathing, blink, idle-expression,
+and speaking-mouth animations remain enabled on the main display.
+
 ### Flash, key provisioning, and Wi-Fi
 
 Connect the CoreS3 USB data port and find its serial port (for example,

@@ -23,6 +23,11 @@ using namespace stackchan::avatar;
 
 #define TAG "StackChanAvatarDisplay"
 
+namespace {
+constexpr bool kAutonomousServoMotionEnabled = false;
+constexpr int kServoHomeSpeed = 300;
+}
+
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 LV_FONT_DECLARE(BUILTIN_ICON_FONT);
 LV_FONT_DECLARE(font_awesome_30_4);
@@ -267,10 +272,17 @@ void StackChanAvatarDisplay::SetupUI()
     });
 
     stackchan.attachAvatar(std::move(avatar));
+
+    auto& motion = stackchan.motion();
+    motion.setModifyLock(!kAutonomousServoMotionEnabled);
+    motion.goHome(kServoHomeSpeed);
+
     stackchan.addModifier(std::make_unique<BreathModifier>());
     blink_modifier_id_ = stackchan.addModifier(std::make_unique<BlinkModifier>());
-    stackchan.addModifier(std::make_unique<HeadPetModifier>());
-    stackchan.addModifier(std::make_unique<ImuEventModifier>());
+    if (kAutonomousServoMotionEnabled) {
+        stackchan.addModifier(std::make_unique<HeadPetModifier>());
+        stackchan.addModifier(std::make_unique<ImuEventModifier>());
+    }
 
     preview_image_ = lv_image_create(lv_screen_active());
     lv_obj_set_size(preview_image_, 320, 240);
@@ -279,8 +291,12 @@ void StackChanAvatarDisplay::SetupUI()
 
     // GetHAL().startStackChanAutoUpdate(24);
 
-    auto config        = hal_bridge::get_xiaozhi_config();
-    idle_motion_level_ = config.idleRandomMovementLevel;
+    auto config = hal_bridge::get_xiaozhi_config();
+    idle_motion_level_ =
+        kAutonomousServoMotionEnabled ? config.idleRandomMovementLevel : 0;
+    ESP_LOGI(TAG, "Autonomous servo motion: disabled (idle/head-pet/IMU/speaking)");
+    ESP_LOGI(TAG, "LCD animation: enabled (breathing/blink/idle-expression/mouth)");
+    ESP_LOGI(TAG, "Servo home: yaw=0 pitch=0, speed=%d", kServoHomeSpeed);
 
     ESP_LOGI(TAG, "Avatar created and started");
 }
@@ -356,13 +372,11 @@ void StackChanAvatarDisplay::SetEmotion(const char* emotion)
         if (idle_motion_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_motion_modifier_id_);
             idle_motion_modifier_id_ = -1;
+        }
+        if (idle_expression_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_expression_modifier_id_);
             idle_expression_modifier_id_ = -1;
         }
-
-        // Return to default pose
-        auto& motion = GetStackChan().motion();
-        motion.pitchServo().moveWithSpeed(0, 80);
 
     } else if (strcmp(emotion, "doubtful") == 0) {
         avatar.setEmotion(Emotion::Doubt);
@@ -533,22 +547,32 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
     }
 
     if (is_idle) {
-        // Start idle motion
-        ESP_LOGW(TAG, "Start idle motion");
-        if (idle_motion_modifier_id_ < 0) {
-            if (idle_motion_level_ > 0) {
-                CreateIdleMotionModifier();
-            }
+        if (!_is_xiaozhi_idle) {
+            motion.setModifyLock(true);
+            motion.goHome(kServoHomeSpeed);
+            ESP_LOGI(TAG, "Idle servo hold: home commanded, autonomous modifiers locked");
+        }
+
+        // Preserve idle face animation, but do not create the physical
+        // IdleMotionModifier when idle servo motion is disabled.
+        if (idle_motion_level_ > 0 && idle_motion_modifier_id_ < 0) {
+            CreateIdleMotionModifier();
+        }
+        if (idle_expression_modifier_id_ < 0) {
             idle_expression_modifier_id_ = stackchan.addModifier(std::make_unique<IdleExpressionModifier>());
         }
 
         _is_xiaozhi_idle = true;
     } else {
+        motion.setModifyLock(!kAutonomousServoMotionEnabled);
+
         // Stop idle motion
         ESP_LOGW(TAG, "Stop idle motion");
         if (idle_motion_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_motion_modifier_id_);
             idle_motion_modifier_id_ = -1;
+        }
+        if (idle_expression_modifier_id_ >= 0) {
             stackchan.removeModifier(idle_expression_modifier_id_);
             idle_expression_modifier_id_ = -1;
         }
